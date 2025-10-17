@@ -48,7 +48,7 @@ window.tsupasswd = window.tsupasswd || {};
   };
 })();
 
-btn.addEventListener("click", async function() {
+async function runAuto() {
   try {
     const tab = await getActiveTab();
     if (!(tab && tab.id)) {
@@ -68,6 +68,19 @@ btn.addEventListener("click", async function() {
       result.textContent = "このページでは実行できません（chrome:// 等は不可）。";
       return;
     }
+
+    // ポップアップからアクティブタブのcontent.jsへ指示を送る
+    const sendResp = await new Promise((resolve) => {
+      try {
+        chrome.tabs.sendMessage(tab.id, { type: 'TSUPASSWD_FILL' }, (resp) => resolve(resp));
+      } catch (_) { resolve(null); }
+    });
+    if (sendResp && sendResp.ok) {
+      result.textContent = "ユーザID/パスワードの入力を開始しました。";
+    } else {
+      result.textContent = "入力を開始できませんでした。ページを再読み込みしてお試しください。";
+    }
+    return;
 
     // 1) tsupasswd の実行で資格情報を取得
     let creds;
@@ -136,6 +149,61 @@ btn.addEventListener("click", async function() {
         setVal(user, userVal);
         setVal(pass, passVal);
 
+        // フォーカス時にユーザID/パスワード（伏せ字）を表示するインラインポップアップ
+        const ensureInlinePopup = function(anchor) {
+          let box = document.getElementById("tsupasswd-inline-popup");
+          if (!box) {
+            box = document.createElement("div");
+            box.id = "tsupasswd-inline-popup";
+            box.style.position = "relative";
+            box.style.marginTop = "8px";
+            box.style.fontSize = "12px";
+            box.style.lineHeight = "1.4";
+            box.style.background = "rgba(32,33,36,0.98)";
+            box.style.color = "#fff";
+            box.style.border = "1px solid rgba(0,0,0,0.2)";
+            box.style.borderRadius = "6px";
+            box.style.padding = "8px 10px";
+            box.style.boxShadow = "0 2px 10px rgba(0,0,0,0.2)";
+            box.style.zIndex = "2147483647";
+            box.style.display = "none";
+          }
+          try {
+            anchor.insertAdjacentElement("afterend", box);
+          } catch (_) {
+            if (!box.parentNode) document.body.appendChild(box);
+          }
+          return box;
+        };
+        const showMaskedPopup = function(anchor, idText, pwText) {
+          const box = ensureInlinePopup(anchor);
+          const masked = (pwText && pwText.length) ? "\u2022".repeat(pwText.length) : "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+          box.innerHTML = '' +
+            '<div style="display:flex;flex-direction:column;gap:4px;">' +
+              '<div><strong>ユーザID:</strong> <span id="tsu-id"></span></div>' +
+              '<div><strong>パスワード:</strong> <span id="tsu-pw"></span></div>' +
+            '</div>';
+          const idSpan = box.querySelector('#tsu-id');
+          const pwSpan = box.querySelector('#tsu-pw');
+          if (idSpan) idSpan.textContent = idText || '';
+          if (pwSpan) pwSpan.textContent = masked;
+          box.style.display = 'block';
+        };
+        const hidePopup = function() {
+          const box = document.getElementById('tsupasswd-inline-popup');
+          if (box) box.style.display = 'none';
+        };
+
+        // フォーカス/ブラー時の挙動を設定
+        if (user && user.addEventListener) {
+          user.addEventListener('focus', function(){ showMaskedPopup(user, userVal, passVal); });
+          user.addEventListener('blur', hidePopup);
+        }
+        if (pass && pass.addEventListener) {
+          pass.addEventListener('focus', function(){ showMaskedPopup(pass, userVal, passVal); });
+          pass.addEventListener('blur', hidePopup);
+        }
+
         return { ok: true, userHint: byHint(user), passHint: byHint(pass) };
       },
       args: [creds]
@@ -160,4 +228,7 @@ btn.addEventListener("click", async function() {
     console.error(e);
     result.textContent = "実行に失敗しました。別のページでお試しください。";
   }
-});
+}
+
+// ボタンクリックで実行
+btn.addEventListener('click', runAuto);
