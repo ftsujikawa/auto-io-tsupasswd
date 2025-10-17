@@ -104,13 +104,12 @@
     } catch(_){}
   };
 
-  const ensureInlinePopup = function(anchor) {
+  const ensureFixedPopup = function() {
     let box = document.getElementById("tsupasswd-inline-popup");
     if (!box) {
       box = document.createElement("div");
       box.id = "tsupasswd-inline-popup";
-      box.style.position = "relative";
-      box.style.marginTop = "8px";
+      box.style.position = "fixed";
       box.style.fontSize = "12px";
       box.style.lineHeight = "1.4";
       box.style.background = "rgba(32,33,36,0.98)";
@@ -118,19 +117,27 @@
       box.style.border = "1px solid rgba(0,0,0,0.2)";
       box.style.borderRadius = "6px";
       box.style.padding = "8px 10px";
-      box.style.boxShadow = "0 2px 10px rgba(0,0,0,0.2)";
+      box.style.boxShadow = "0 6px 18px rgba(0,0,0,0.3)";
       box.style.zIndex = "2147483647";
       box.style.display = "none";
-    }
-    try {
-      anchor.insertAdjacentElement("afterend", box);
-    } catch (_) {
-      if (!box.parentNode) document.body.appendChild(box);
+      box.style.maxWidth = "min(360px, calc(100vw - 24px))";
+      box.style.pointerEvents = "auto";
+      document.body.appendChild(box);
     }
     return box;
   };
+
+  const placePopup = function(anchor, box) {
+    if (!anchor || !box) return;
+    const r = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : { top: 0, left: 0, bottom: 0, width: 0, height: 0 };
+    const gap = 8;
+    const top = Math.min(Math.max(r.bottom + gap, 8), window.innerHeight - (box.offsetHeight || 0) - 8);
+    const left = Math.min(Math.max(r.left, 8), window.innerWidth - (box.offsetWidth || 0) - 8);
+    box.style.top = top + "px";
+    box.style.left = left + "px";
+  };
   const showMaskedPopup = function(anchor, idText, pwText) {
-    const box = ensureInlinePopup(anchor);
+    const box = ensureFixedPopup();
     const masked = (pwText && pwText.length) ? "\u2022".repeat(pwText.length) : "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
     box.innerHTML = '' +
       '<div style="display:flex;flex-direction:column;gap:4px;">' +
@@ -142,6 +149,21 @@
     if (idSpan) idSpan.textContent = idText || '';
     if (pwSpan) pwSpan.textContent = masked;
     box.style.display = 'block';
+    // レイアウト完了後に位置計算（安定化）
+    try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
+    // スクロール/リサイズ時に追従（1回だけバインド）
+    if (!window.__tsu_place_bound) {
+      const handler = () => {
+        const b = document.getElementById('tsupasswd-inline-popup');
+        if (b && b.style.display !== 'none' && showMaskedPopup.__anchor) {
+          placePopup(showMaskedPopup.__anchor, b);
+        }
+      };
+      window.addEventListener('scroll', handler, true);
+      window.addEventListener('resize', handler, true);
+      window.__tsu_place_bound = true;
+    }
+    showMaskedPopup.__anchor = anchor;
     return box;
   };
   const hidePopup = function() {
