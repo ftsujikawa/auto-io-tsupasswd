@@ -1,0 +1,9 @@
+{
+  "name": "com.tsu.tsupasswd",
+  "description": "tsupasswd native host",
+  "path": "/usr/local/bin/tsupasswd-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ahbmbieepcmpabkhhkmdppphdmligedi/"
+  ]
+}

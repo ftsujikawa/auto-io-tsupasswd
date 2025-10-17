@@ -1,0 +1,28 @@
+{
+  "name": "Chrome Extension Base",
+  "description": "Base template for a Chrome Extension (Manifest V3).",
+  "version": "0.1.0",
+  "manifest_version": 3,
+  "action": {
+    "default_title": "Open Popup",
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "options_page": "options/options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
+}
