@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, json, struct, subprocess
+import sys, json, struct, subprocess, os, shutil
 
 def _find_in_obj(obj, keys_lower):
     """Recursively find first matching key's string-like value in nested dict/list JSON.
@@ -53,35 +53,141 @@ while True:
     msg = read_msg()
     if msg is None:
         break
-    args = msg.get('args') or []
     try:
-        # tsupasswd を JSON 出力で実行（--json をホスト側で付与）
-        # コマンドはトークン単位で分割して渡す
-        cmd = [
-            "/Users/tsu/src/rust/password/target/debug/tsupasswd",
-            "search",
-        ] + (args or []) + ["--json"]
-        cp = subprocess.run(cmd, capture_output=True, text=True)
-        if cp.returncode != 0:
-            write_msg({"ok": False, "error": (cp.stderr.strip() or "tsupasswd failed")})
+        # 実行ファイルの探索（環境依存対策）
+        def find_bin():
+            cand = []
+            env = os.environ.get('TSUPASSWD_BIN')
+            if env:
+                cand.append(env)
+            which = shutil.which('tsupasswd')
+            if which:
+                cand.append(which)
+            cand.append("/Users/tsu/src/rust/password/target/debug/tsupasswd")
+            for p in cand:
+                try:
+                    if p and os.path.isfile(p) and os.access(p, os.X_OK):
+                        return p
+                except Exception:
+                    pass
+            # 最後の手段として環境変数のみ返す
+            return env or "/Users/tsu/src/rust/password/target/debug/tsupasswd"
+
+        # 実行時環境を組み立て（AUTH_SECRETなどを渡す）
+        def build_run_env():
+            env = os.environ.copy()
+            auth_secret = os.environ.get('AUTH_SECRET')
+            if auth_secret:
+                env['AUTH_SECRET'] = auth_secret
+            return env
+
+        action = msg.get('action')
+        if action == 'SAVE':
+            # 保存リクエスト: { action: 'SAVE', entry: { title, url, username, password, note } }
+            entry = msg.get('entry') or {}
+            title = str(entry.get('title') or '')
+            url = str(entry.get('url') or '')
+            username = str(entry.get('username') or '')
+            password = str(entry.get('password') or '')
+            note = str(entry.get('note') or '')
+            bin_path = find_bin()
+            # 位置引数: URL ユーザID パスワード / オプション: --title タイトル, --note 備考
+            # 空値は渡さない
+            def build_args():
+                if not url or not username or not password:
+                    # 必須が欠ける場合はエラー
+                    return None
+                args = [bin_path, 'add', url, username, password]
+                if title:
+                    args.extend(['--title', title])
+                if note:
+                    args.extend(['--note', note])
+                return args
+            cmd = build_args()
+            if not cmd:
+                write_msg({"ok": False, "error": "missing required fields (url/username/password)", "cmd": ["add", url, username, "***"]})
+            else:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env())
+                if cp.returncode == 0:
+                    write_msg({"ok": True, "stdout": cp.stdout.strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (cp.stderr.strip() or cp.stdout.strip() or "tsupasswd save failed"), "stdout": cp.stdout.strip(), "stderr": cp.stderr.strip(), "cmd": cmd})
+            last_err = None
+            # 既存のループは不要になったため削除
+            continue
+
+        # 既存: 検索（資格情報取得）
+        args = msg.get('args') or []
+        bin_path = find_bin()
+        # 先頭argが 'add' の場合は保存実行。そうでなければ search --json。
+        is_save_like = False
+        if args:
+            a0 = str(args[0])
+            if a0 == 'add':
+                is_save_like = True
+        if is_save_like:
+            cmd = [bin_path] + args
+            cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env())
+            if cp.returncode != 0:
+                write_msg({"ok": False, "error": (cp.stderr.strip() or cp.stdout.strip() or "tsupasswd failed"), "stdout": cp.stdout.strip(), "stderr": cp.stderr.strip(), "cmd": cmd})
+            else:
+                write_msg({"ok": True, "stdout": cp.stdout.strip(), "cmd": cmd})
         else:
-            out = cp.stdout.strip()
-            # 可能なら JSON として読み取り、username/password を整形
-            try:
-                data = json.loads(out)
-                user_keys = {"username", "user", "login", "account", "email"}
-                pass_keys = {"password", "pass", "secret"}
-                username = _find_in_obj(data, user_keys) or ""
-                password = _find_in_obj(data, pass_keys) or ""
-                write_msg({"ok": True, "username": username, "password": password})
-            except Exception:
-                # 非JSON出力の場合のフォールバック（簡易抽出）
-                # 例: "user: alice\npass: secret" や "username=alice password=secret"
-                import re
-                m_user = re.search(r"user(?:name)?[:=]\s*(\S+)", out, re.IGNORECASE)
-                m_pass = re.search(r"pass(?:word)?[:=]\s*(\S+)", out, re.IGNORECASE)
-                username = m_user.group(1) if m_user else ""
-                password = m_pass.group(1) if m_pass else ""
-                write_msg({"ok": True, "username": username, "password": password})
+            cmd = [bin_path, "search"] + (args or []) + ["--json"]
+            cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env())
+            if cp.returncode != 0:
+                write_msg({"ok": False, "error": (cp.stderr.strip() or "tsupasswd failed")})
+            else:
+                out = cp.stdout.strip()
+                # 可能なら JSON として読み取り、複数件も整形
+                try:
+                    data = json.loads(out)
+                    user_keys = {"username", "user", "login", "account", "email"}
+                    pass_keys = {"password", "pass", "secret"}
+                    title_keys = {"title", "name", "label"}
+                    url_keys = {"url", "uri", "link"}
+                    note_keys = {"note", "memo", "remark", "comment"}
+
+                    entries = []
+                    # 結果がリスト、もしくはオブジェクト内の配列フィールドを探索
+                    cand_list = None
+                    if isinstance(data, list):
+                        cand_list = data
+                    elif isinstance(data, dict):
+                        # 最上位の配列フィールドを一つ拾う（簡易）
+                        for v in data.values():
+                            if isinstance(v, list):
+                                cand_list = v
+                                break
+                    if cand_list is None:
+                        cand_list = [data]
+
+                    for item in cand_list:
+                        try:
+                            e = {
+                                "title": _find_in_obj(item, title_keys) or "",
+                                "url": _find_in_obj(item, url_keys) or "",
+                                "username": _find_in_obj(item, user_keys) or "",
+                                "password": _find_in_obj(item, pass_keys) or "",
+                                "note": _find_in_obj(item, note_keys) or "",
+                            }
+                            if any([e["username"], e["password"], e["title"], e["url"], e["note"]]):
+                                entries.append(e)
+                        except Exception:
+                            pass
+
+                    # 後方互換のため、先頭要素のusername/passwordも併記
+                    first_user = entries[0]["username"] if entries else (_find_in_obj(data, user_keys) or "")
+                    first_pass = entries[0]["password"] if entries else (_find_in_obj(data, pass_keys) or "")
+                    write_msg({"ok": True, "entries": entries, "username": first_user, "password": first_pass})
+                except Exception:
+                    # 非JSON出力の場合のフォールバック（簡易抽出）
+                    # 例: "user: alice\npass: secret" や "username=alice password=secret"
+                    import re
+                    m_user = re.search(r"user(?:name)?[:=]\s*(\S+)", out, re.IGNORECASE)
+                    m_pass = re.search(r"pass(?:word)?[:=]\s*(\S+)", out, re.IGNORECASE)
+                    username = m_user.group(1) if m_user else ""
+                    password = m_pass.group(1) if m_pass else ""
+                    write_msg({"ok": True, "entries": [{"title": "", "url": "", "username": username, "password": password, "note": ""}], "username": username, "password": password})
     except Exception as e:
         write_msg({"ok": False, "error": str(e)})
