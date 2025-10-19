@@ -8,9 +8,26 @@
   </head>
   <body>
     <main>
-      <h1>Extension</h1>
-      <button id="get-title">Get Page Title</button>
-      <div id="result"></div>
+      <h1>パスワード検索</h1>
+      <div>
+        <label for="user-id-input">ユーザID</label>
+        <input id="user-id-input" type="text" placeholder="user123" />
+        <button id="search-btn">検索</button>
+      </div>
+
+      <div id="result" style="margin-top:10px;"></div>
+
+      <div id="cred-box" style="display:none; margin-top:10px;">
+        <div>
+          <strong>ユーザID:</strong>
+          <span id="user-id-text"></span>
+        </div>
+        <div style="margin-top:6px; display:flex; align-items:center; gap:6px;">
+          <strong>パスワード:</strong>
+          <input id="password-field" type="password" readonly style="flex:1;" />
+          <button id="toggle-visibility">表示</button>
+        </div>
+      </div>
     </main>
     <script src="./popup.js" type="module"></script>
   </body>

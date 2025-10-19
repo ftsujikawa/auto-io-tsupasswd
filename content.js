@@ -815,7 +815,7 @@
               const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
               const u = ins.find(isUserLike) || null;
               const p = ins.find(isPassLike) || null;
-              if (!(u || p)) return; // 片方も無ければ表示しない
+              if (!(u && p)) return; // 片方も無ければ表示しない
             } catch(_) { return; }
             const b = showMaskedPopup(user, userVal, passVal); attachBoxClick(b);
           });
@@ -831,7 +831,7 @@
               const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
               const u = ins.find(isUserLike) || null;
               const p = ins.find(isPassLike) || null;
-              if (!(u || p)) return; // 片方も無ければ表示しない
+              if (!(u && p)) return; // 片方も無ければ表示しない
             } catch(_) { return; }
             const b = showMaskedPopup(pass, userVal, passVal); attachBoxClick(b);
           });
@@ -866,7 +866,7 @@
                 const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
                 const u = ins.find(isUserLike) || null;
                 const p = ins.find(isPassLike) || null;
-                if (!(u || p)) { if (!inPopup) hidePopup(); return; }
+                if (!(u && p)) { if (!inPopup) hidePopup(); return; }
               } else { if (!inPopup) hidePopup(); return; }
             } catch(_) { if (!inPopup) hidePopup(); return; }
             const b = showMaskedPopup(el, userVal, passVal);
