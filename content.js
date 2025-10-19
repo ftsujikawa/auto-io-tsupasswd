@@ -807,20 +807,39 @@
         if (!firstAnchor) firstAnchor = pass || user;
         // フォーカス時にポップアップ表示、クリックで入力
         if (!user.__tsuBound) {
-          user.addEventListener('focus', function(){ if (dialogOpen) return; const b = showMaskedPopup(user, userVal, passVal); attachBoxClick(b); });
+          user.addEventListener('focus', function(){
+            if (dialogOpen) return;
+            try {
+              const f = user && (user.form || (user.closest && user.closest('form')));
+              if (!f) return;
+              const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
+              const u = ins.find(isUserLike) || null;
+              const p = ins.find(isPassLike) || null;
+              if (!(u || p)) return; // 片方も無ければ表示しない
+            } catch(_) { return; }
+            const b = showMaskedPopup(user, userVal, passVal); attachBoxClick(b);
+          });
           user.addEventListener('blur', hidePopup);
           user.__tsuBound = true;
         }
         if (!pass.__tsuBound) {
-          pass.addEventListener('focus', function(){ if (dialogOpen) return; const b = showMaskedPopup(pass, userVal, passVal); attachBoxClick(b); });
+          pass.addEventListener('focus', function(){
+            if (dialogOpen) return;
+            try {
+              const f = pass && (pass.form || (pass.closest && pass.closest('form')));
+              if (!f) return;
+              const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
+              const u = ins.find(isUserLike) || null;
+              const p = ins.find(isPassLike) || null;
+              if (!(u || p)) return; // 片方も無ければ表示しない
+            } catch(_) { return; }
+            const b = showMaskedPopup(pass, userVal, passVal); attachBoxClick(b);
+          });
           pass.addEventListener('blur', hidePopup);
           pass.__tsuBound = true;
         }
       }
-      // 代表のペア近傍に即時ポップアップ（ロード直後の自動表示を有効化）
-      if (firstAnchor && !dialogOpen) {
-        try { const b = showMaskedPopup(firstAnchor, userVal, passVal); attachBoxClick(b); } catch(_) {}
-      }
+      // ロード直後は自動表示しない（フォーカス時のみ表示）
 
       // グローバルfocusinで新規/Shadow DOM内のフォーカスにも反応
       if (!window.__tsu_focusin_bound) {
@@ -840,6 +859,16 @@
               if (!inPopup) hidePopup();
               return;
             }
+            // 同一formにユーザID/パスワード両方が無い場合は表示しない
+            try {
+              const f = el && (el.form || (el.closest && el.closest('form')));
+              if (f) {
+                const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
+                const u = ins.find(isUserLike) || null;
+                const p = ins.find(isPassLike) || null;
+                if (!(u || p)) { if (!inPopup) hidePopup(); return; }
+              } else { if (!inPopup) hidePopup(); return; }
+            } catch(_) { if (!inPopup) hidePopup(); return; }
             const b = showMaskedPopup(el, userVal, passVal);
             attachBoxClick(b);
           } catch(_) {}
