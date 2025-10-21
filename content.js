@@ -997,8 +997,6 @@
       // フィールド検出時に一度だけ自動表示（過剰表示を避けるためフラグで制御）
       try {
         if (!window.__tsu_auto_shown && firstAnchor && !dialogOpen && !openingDialog) {
-          const b = showMaskedPopup(firstAnchor, userVal, passVal);
-          attachBoxClick(b);
           window.__tsu_auto_shown = true;
         }
       } catch(_) {}
