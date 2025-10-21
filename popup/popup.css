@@ -1,5 +1,38 @@
 html, body { margin: 0; padding: 0; }
-body { font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-main { padding: 12px; min-width: 240px; }
-#result { margin-top: 8px; word-break: break-all; }
-button { cursor: pointer; }
+body {
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: #0f1115;
+  color: #e5e7eb;
+}
+main {
+  padding: 12px;
+  min-width: 260px;
+  background: #151a22;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+  margin: 8px;
+}
+#result { margin-top: 8px; word-break: break-all; color: #cbd5e1; }
+
+input[type="text"],
+input[type="password"],
+input[type="search"],
+textarea, select {
+  background: #0f1720;
+  color: #e5e7eb;
+  border: 1px solid #273047;
+  border-radius: 8px;
+  padding: 6px 8px;
+  outline: none;
+}
+input::placeholder { color: #6b7280; }
+
+button {
+  cursor: pointer;
+  background: #1a73e8;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+button:hover { background: #1667d1; }

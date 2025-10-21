@@ -8,7 +8,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === "RUN_TSUPASSWD") {
     // ネイティブホスト名は環境に合わせて登録してください
-    const hostName = message.host || "com.tsu.tsupasswd";
+    const hostName = message.host || "dev.happy-factory.tsupasswd";
     chrome.storage.local.get({ auth_secret: '' }, (data) => {
       const payload = { args: message.args || [], secret: (data && data.auth_secret) || '' };
       chrome.runtime.sendNativeMessage(hostName, payload, (response) => {
@@ -29,7 +29,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "SAVE_TSUPASSWD") {
     // payload は { action: 'SAVE', entry: { title, url, username, password, note } }
     const entry = message.entry || {};
-    const hostName = message.host || "com.tsu.tsupasswd";
+    const hostName = message.host || "dev.happy-factory.tsupasswd";
     chrome.storage.local.get({ auth_secret: '' }, (data) => {
       const payload = { action: 'SAVE', entry, secret: (data && data.auth_secret) || '' };
       chrome.runtime.sendNativeMessage(hostName, payload, (response) => {
@@ -48,7 +48,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async
   }
   if (message.type === "AUTH_TSUPASSWD") {
-    const hostName = message.host || "com.tsu.tsupasswd";
+    const hostName = message.host || "dev.happy-factory.tsupasswd";
     const provided = message.secret || '';
     const mode = message.mode || 'secret';
     const proceed = (secretFromStore) => {
