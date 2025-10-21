@@ -77,7 +77,20 @@ try {
     secretSaveBtn.addEventListener('click', () => {
       const v = (secretInput && secretInput.value) || '';
       chrome.storage.local.set({ auth_secret: v }, () => {
-        try { if (result) { result.textContent = 'secretを保存しました。'; setTimeout(() => { if (result && result.textContent === 'secretを保存しました。') result.textContent = ''; }, 1200); } } catch(_) {}
+        try {
+          if (result) { result.textContent = 'secretを保存しました。認証中…'; }
+          // ネイティブに AUTH を直接依頼（指定されたシークレットを明示的に渡す）
+          chrome.runtime.sendMessage({ type: 'AUTH_TSUPASSWD', mode: 'secret', secret: v }, (resp) => {
+            try {
+              if (!resp || resp.ok === false) {
+                if (result) result.textContent = '認証に失敗しました。';
+              } else {
+                if (result) result.textContent = '認証に成功しました。';
+              }
+              setTimeout(() => { if (result) result.textContent = ''; }, 1800);
+            } catch(_) {}
+          });
+        } catch(_) {}
       });
     });
   }

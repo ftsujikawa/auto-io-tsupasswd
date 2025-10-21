@@ -266,9 +266,9 @@
       const id = (q('#tsu-save-user').value || '').trim();
       const pw = (q('#tsu-save-pass').value || '').trim();
       let msg = '';
-      if (!id) msg = 'ユーザIDは必須です。';
-      else if (!u) msg = 'URLは必須です。';
+      if (!u) msg = 'URLは必須です。';
       else if (!isValidUrl(u)) msg = 'URLが不正です（http/https/fileのみ）。';
+      else if (!id && !pw) msg = 'ユーザIDまたはパスワードのどちらかを入力してください。';
       if (msg) {
         if (err) { err.textContent = msg; err.style.display = 'block'; }
         setBtn(false);

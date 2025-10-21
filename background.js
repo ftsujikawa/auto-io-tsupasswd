@@ -47,4 +47,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // async
   }
+  if (message.type === "AUTH_TSUPASSWD") {
+    const hostName = message.host || "com.tsu.tsupasswd";
+    const provided = message.secret || '';
+    const mode = message.mode || 'secret';
+    const proceed = (secretFromStore) => {
+      const secret = provided || secretFromStore || '';
+      const payload = { action: 'AUTH', mode, secret };
+      chrome.runtime.sendNativeMessage(hostName, payload, (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        const ok = !(response && response.ok === false);
+        if (!ok) {
+          sendResponse({ ok: false, error: (response && response.error) || 'native error', data: response });
+        } else {
+          sendResponse({ ok: true, data: response });
+        }
+      });
+    };
+    if (!provided) {
+      chrome.storage.local.get({ auth_secret: '' }, (data) => proceed((data && data.auth_secret) || ''));
+    } else {
+      proceed('');
+    }
+    return true; // async
+  }
 });

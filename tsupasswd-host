@@ -94,10 +94,11 @@ while True:
             bin_path = find_bin()
             # 位置引数: URL ユーザID パスワード（空なら空文字）/ オプション: --title タイトル, --note 備考
             def build_args():
-                if not url or not username:
+                if not url:
                     return None
+                usr = username if username is not None else ''
                 pwd = password if password is not None else ''
-                args = [bin_path, 'add', url, username, pwd]
+                args = [bin_path, 'add', url, usr, pwd]
                 if title:
                     args.extend(['--title', title])
                 if note:
@@ -105,7 +106,7 @@ while True:
                 return args
             cmd = build_args()
             if not cmd:
-                write_msg({"ok": False, "error": "missing required fields (url/username)", "cmd": ["add", url, username, "***"]})
+                write_msg({"ok": False, "error": "missing required fields (url)", "cmd": ["add", url or '', (username or ''), "***"]})
             else:
                 cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret))
                 if cp.returncode == 0:
@@ -114,6 +115,20 @@ while True:
                     write_msg({"ok": False, "error": (cp.stderr.strip() or cp.stdout.strip() or "tsupasswd save failed"), "stdout": cp.stdout.strip(), "stderr": cp.stderr.strip(), "cmd": cmd})
             last_err = None
             # 既存のループは不要になったため削除
+            continue
+
+        elif action == 'AUTH':
+            # 認証: { action: 'AUTH', mode?: 'secret' }
+            # 例: tsupasswd auth secret （AUTH_SECRETはenvで渡す）
+            mode = str(msg.get('mode') or 'secret')
+            secret = msg.get('secret') or ''
+            bin_path = find_bin()
+            cmd = [bin_path, 'auth', mode]
+            cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret))
+            if cp.returncode == 0:
+                write_msg({"ok": True, "stdout": cp.stdout.strip(), "cmd": cmd})
+            else:
+                write_msg({"ok": False, "error": (cp.stderr.strip() or cp.stdout.strip() or "tsupasswd auth failed"), "stdout": cp.stdout.strip(), "stderr": cp.stderr.strip(), "cmd": cmd})
             continue
 
         # 既存: 検索（資格情報取得）
