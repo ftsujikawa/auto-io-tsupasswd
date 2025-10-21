@@ -107,19 +107,19 @@
   };
 
   const forceApply = function(user, pass, uval, pval) {
-    if (!user || !pass) return;
-    try { user.setAttribute('autocomplete', 'current-username'); } catch(_){}
-    try { pass.setAttribute('autocomplete', 'current-password'); } catch(_){}
-    const apply = () => { setVal(user, uval); setVal(pass, pval); };
-    apply();
-    try { setTimeout(apply, 60); } catch(_){}
-    try { setTimeout(apply, 260); } catch(_){}
+    const applyBoth = () => { if (user) setVal(user, uval); if (pass) setVal(pass, pval); };
+    try { if (user) user.setAttribute('autocomplete', 'current-username'); } catch(_){ }
+    try { if (pass) pass.setAttribute('autocomplete', 'current-password'); } catch(_){ }
+    applyBoth();
+    try { setTimeout(applyBoth, 60); } catch(_){ }
+    try { setTimeout(applyBoth, 260); } catch(_){ }
   };
 
-  const ensureFixedPopup = function() {
-    let box = document.getElementById("tsupasswd-inline-popup");
+  const ensureFixedPopup = function(anchor) {
+    const doc = (anchor && anchor.ownerDocument) || document;
+    let box = doc.getElementById("tsupasswd-inline-popup");
     if (!box) {
-      box = document.createElement("div");
+      box = doc.createElement("div");
       box.id = "tsupasswd-inline-popup";
       box.style.position = "fixed";
       box.style.fontSize = "12px";
@@ -134,7 +134,7 @@
       box.style.display = "none";
       box.style.maxWidth = "min(360px, calc(100vw - 24px))";
       box.style.pointerEvents = "auto";
-      document.body.appendChild(box);
+      (doc.body || doc.documentElement).appendChild(box);
       // ページ側のグローバルハンドラに奪われないようにイベントを遮断（バブリング段階で停止）
       const stopAll = (e) => { try { if (e.stopImmediatePropagation) e.stopImmediatePropagation(); e.stopPropagation(); } catch(_){} };
       box.addEventListener('click', stopAll, false);
@@ -148,13 +148,14 @@
     if (!anchor || !box) return;
     const r = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : { top: 0, left: 0, bottom: 0, width: 0, height: 0 };
     const gap = 8;
-    const top = Math.min(Math.max(r.bottom + gap, 8), window.innerHeight - (box.offsetHeight || 0) - 8);
-    const left = Math.min(Math.max(r.left, 8), window.innerWidth - (box.offsetWidth || 0) - 8);
+    const win = (box.ownerDocument && box.ownerDocument.defaultView) || window;
+    const top = Math.min(Math.max(r.bottom + gap, 8), (win.innerHeight || window.innerHeight) - (box.offsetHeight || 0) - 8);
+    const left = Math.min(Math.max(r.left, 8), (win.innerWidth || window.innerWidth) - (box.offsetWidth || 0) - 8);
     box.style.top = top + "px";
     box.style.left = left + "px";
   };
   const openSaveDialog = function(anchor, idText, pwText) {
-    const box = ensureFixedPopup();
+    const box = ensureFixedPopup(anchor);
     const title = document.title || '';
     const urlStr = location.href || '';
     dialogOpen = true;
@@ -266,7 +267,6 @@
       const pw = (q('#tsu-save-pass').value || '').trim();
       let msg = '';
       if (!id) msg = 'ユーザIDは必須です。';
-      else if (!pw) msg = 'パスワードは必須です。';
       else if (!u) msg = 'URLは必須です。';
       else if (!isValidUrl(u)) msg = 'URLが不正です（http/https/fileのみ）。';
       if (msg) {
@@ -406,11 +406,12 @@
   const showMaskedPopup = function(anchor, idText, pwText) {
     // 保存ダイアログが開いている場合は、位置だけ追従して内容は上書きしない
     if (dialogOpen || openingDialog) {
-      const boxExist = document.getElementById('tsupasswd-inline-popup') || ensureFixedPopup();
+      const doc = (anchor && anchor.ownerDocument) || document;
+      const boxExist = doc.getElementById('tsupasswd-inline-popup') || ensureFixedPopup(anchor);
       try { requestAnimationFrame(() => placePopup(anchor, boxExist)); } catch(_) { placePopup(anchor, boxExist); }
       return boxExist;
     }
-    const box = ensureFixedPopup();
+    const box = ensureFixedPopup(anchor);
     const masked = (pwText && pwText.length) ? "\u2022".repeat(pwText.length) : "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
     // entriesが存在する場合は一覧を表示（1件でも一覧で見せる）
     if (lastEntries && Array.isArray(lastEntries) && lastEntries.length > 0) {
@@ -427,7 +428,7 @@
             '<div style="display:flex;flex-direction:column;gap:2px;">' +
               '<div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+ title +'</div>' +
               (url ? '<div style="color:#9aa0a6;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+ url +'</div>' : '') +
-              '<div style="display:flex;gap:8px;font-size:12px;">' +
+              '<div style="display:flex;flex-direction:column;gap:2px;font-size:12px;">' +
                 '<div>ユーザID: <span>'+ user +'</span></div>' +
                 '<div>パスワード: <span>'+ pwMasked +'</span></div>' +
               '</div>' +
@@ -493,14 +494,35 @@
                 } catch(_) {}
               }
             }
-            if (!targetPairs || !targetPairs.length) return;
             const uval = e.username || '';
             const pval = e.password || '';
-            const first = targetPairs[0];
-            if (first && first.user && first.pass) {
-              forceApply(first.user, first.pass, uval, pval);
-              filledSet.add(first.user); filledSet.add(first.pass);
+            if (!targetPairs || !targetPairs.length) {
+              // フォールバック: アンカーと同一フォーム、またはアンカー自身へ単独適用
+              let uEl = null, pEl = null;
+              if (anchor) {
+                const form = anchor.form || (anchor.closest && anchor.closest('form'));
+                if (form) {
+                  try {
+                    const inputsInForm = Array.prototype.slice.call(form.querySelectorAll('input'));
+                    if (isUserLike(anchor)) { uEl = anchor; pEl = inputsInForm.find(isPassLike) || null; }
+                    else if (isPassLike(anchor)) { pEl = anchor; uEl = inputsInForm.find(isUserLike) || null; }
+                  } catch(_) {}
+                } else {
+                  if (isUserLike(anchor)) uEl = anchor;
+                  if (isPassLike(anchor)) pEl = anchor;
+                }
+              }
+              if (uEl || pEl) {
+                forceApply(uEl, pEl, uval, pval);
+                if (uEl) filledSet.add(uEl);
+                if (pEl) filledSet.add(pEl);
+              }
+              return;
             }
+            const first = targetPairs[0];
+            forceApply(first.user || null, first.pass || null, uval, pval);
+            if (first.user) filledSet.add(first.user);
+            if (first.pass) filledSet.add(first.pass);
           } catch(_) {}
         };
         // 先にpointerdown(キャプチャ)でclickingBoxを立て、blur起因のhideを抑止（伝播は止めない＝スクロール可）
@@ -564,14 +586,36 @@
                 } catch(_) {}
               }
             }
-            if (!targetPairs || !targetPairs.length) { setTimeout(() => { clickingBox = false; }, 0); return; }
             const uval = e.username || '';
             const pval = e.password || '';
-            const first = targetPairs[0];
-            if (first && first.user && first.pass) {
-              forceApply(first.user, first.pass, uval, pval);
-              filledSet.add(first.user); filledSet.add(first.pass);
+            if (!targetPairs || !targetPairs.length) {
+              // フォールバック: 単独適用
+              let uEl = null, pEl = null;
+              if (anchor) {
+                const form = anchor.form || (anchor.closest && anchor.closest('form'));
+                if (form) {
+                  try {
+                    const inputsInForm = Array.prototype.slice.call(form.querySelectorAll('input'));
+                    if (isUserLike(anchor)) { uEl = anchor; pEl = inputsInForm.find(isPassLike) || null; }
+                    else if (isPassLike(anchor)) { pEl = anchor; uEl = inputsInForm.find(isUserLike) || null; }
+                  } catch(_) {}
+                } else {
+                  if (isUserLike(anchor)) uEl = anchor;
+                  if (isPassLike(anchor)) pEl = anchor;
+                }
+              }
+              if (uEl || pEl) {
+                forceApply(uEl, pEl, uval, pval);
+                if (uEl) filledSet.add(uEl);
+                if (pEl) filledSet.add(pEl);
+              }
+              setTimeout(() => { clickingBox = false; }, 0);
+              return;
             }
+            const first = targetPairs[0];
+            forceApply(first.user || null, first.pass || null, uval, pval);
+            if (first.user) filledSet.add(first.user);
+            if (first.pass) filledSet.add(first.pass);
           } catch(_) {}
           finally {
             setTimeout(() => { clickingBox = false; }, 30);
@@ -639,15 +683,36 @@
                 } catch(_) {}
               }
             }
-            if (!targetPairs || !targetPairs.length) return;
             const uval = e.username || '';
             const pval = e.password || '';
+            if (!targetPairs || !targetPairs.length) {
+              // フォールバック: 単独適用
+              let uEl = null, pEl = null;
+              if (anchor) {
+                const form = anchor.form || (anchor.closest && anchor.closest('form'));
+                if (form) {
+                  try {
+                    const inputsInForm = Array.prototype.slice.call(form.querySelectorAll('input'));
+                    if (isUserLike(anchor)) { uEl = anchor; pEl = inputsInForm.find(isPassLike) || null; }
+                    else if (isPassLike(anchor)) { pEl = anchor; uEl = inputsInForm.find(isUserLike) || null; }
+                  } catch(_) {}
+                } else {
+                  if (isUserLike(anchor)) uEl = anchor;
+                  if (isPassLike(anchor)) pEl = anchor;
+                }
+              }
+              if (uEl || pEl) {
+                forceApply(uEl, pEl, uval, pval);
+                if (uEl) filledSet.add(uEl);
+                if (pEl) filledSet.add(pEl);
+              }
+              return;
+            }
             // 同じformの最初の1組にのみ入力（誤入力防止）
             const first = targetPairs[0];
-            if (first && first.user && first.pass) {
-              forceApply(first.user, first.pass, uval, pval);
-              filledSet.add(first.user); filledSet.add(first.pass);
-            }
+            forceApply(first.user || null, first.pass || null, uval, pval);
+            if (first.user) filledSet.add(first.user);
+            if (first.pass) filledSet.add(first.pass);
           } catch(_) {}
           finally {
             setTimeout(() => { clickingBox = false; }, 30);
@@ -694,14 +759,16 @@
     try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
     // スクロール/リサイズ時に追従（1回だけバインド）
     if (!window.__tsu_place_bound) {
+      const doc = box.ownerDocument || document;
+      const win = (doc && doc.defaultView) || window;
       const handler = () => {
-        const b = document.getElementById('tsupasswd-inline-popup');
+        const b = doc.getElementById('tsupasswd-inline-popup');
         if (b && b.style.display !== 'none' && showMaskedPopup.__anchor) {
           placePopup(showMaskedPopup.__anchor, b);
         }
       };
-      window.addEventListener('scroll', handler, true);
-      window.addEventListener('resize', handler, true);
+      try { win.addEventListener('scroll', handler, true); } catch(_) {}
+      try { win.addEventListener('resize', handler, true); } catch(_) {}
       window.__tsu_place_bound = true;
     }
     showMaskedPopup.__anchor = anchor;
@@ -747,8 +814,11 @@
   };
   const hidePopup = function() {
     if (clickingBox || dialogOpen) return; // ポップクリック中/ダイアログ表示中は隠さない
-    const box = document.getElementById('tsupasswd-inline-popup');
-    if (box) box.style.display = 'none';
+    try {
+      const doc = (showMaskedPopup.__anchor && showMaskedPopup.__anchor.ownerDocument) || document;
+      const box = doc.getElementById('tsupasswd-inline-popup');
+      if (box) box.style.display = 'none';
+    } catch(_) {}
   };
 
   const filledSet = new WeakSet();
@@ -796,9 +866,14 @@
     try {
       const inputs = getAllInputsDeep(document);
       const pairs = pairUserPass(inputs);
-      if (!pairs.length) return false;
-      lastPairs = pairs;
-      lastCreds = creds;
+      if (!pairs.length) {
+        // ペアが無い場合でも、後続のユーザIDのみフォールバックを実行するため続行
+        lastPairs = [];
+        lastCreds = creds;
+      } else {
+        lastPairs = pairs;
+        lastCreds = creds;
+      }
       const userVal = creds.id || creds.username || '';
       const passVal = creds.password || '';
       let firstAnchor = null;
@@ -811,11 +886,12 @@
             if (dialogOpen) return;
             try {
               const f = user && (user.form || (user.closest && user.closest('form')));
-              if (!f) return;
-              const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
-              const u = ins.find(isUserLike) || null;
-              const p = ins.find(isPassLike) || null;
-              if (!(u && p)) return; // 片方も無ければ表示しない
+              if (f) {
+                const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
+                const u = ins.find(isUserLike) || null;
+                const p = ins.find(isPassLike) || null;
+                if (!(u || p)) return; // 同一フォーム内に対象が全く無い場合だけ抑止
+              }
             } catch(_) { return; }
             const b = showMaskedPopup(user, userVal, passVal); attachBoxClick(b);
           });
@@ -827,11 +903,12 @@
             if (dialogOpen) return;
             try {
               const f = pass && (pass.form || (pass.closest && pass.closest('form')));
-              if (!f) return;
-              const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
-              const u = ins.find(isUserLike) || null;
-              const p = ins.find(isPassLike) || null;
-              if (!(u && p)) return; // 片方も無ければ表示しない
+              if (f) {
+                const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
+                const u = ins.find(isUserLike) || null;
+                const p = ins.find(isPassLike) || null;
+                if (!(u || p)) return; // 同一フォーム内に対象が全く無い場合だけ抑止
+              }
             } catch(_) { return; }
             const b = showMaskedPopup(pass, userVal, passVal); attachBoxClick(b);
           });
@@ -839,7 +916,30 @@
           pass.__tsuBound = true;
         }
       }
-      // ロード直後は自動表示しない（フォーカス時のみ表示）
+      // パスワード欄が無くペアが作れないページでも、ユーザID欄で表示できるようフォールバックをバインド
+      try {
+        if (!pairs.length) {
+          const usersOnly = (inputs || []).filter(isUserLike);
+          if (!firstAnchor && usersOnly.length) firstAnchor = usersOnly[0];
+          for (const uEl of usersOnly) {
+            if (uEl.__tsuBound) continue;
+            uEl.addEventListener('focus', function(){
+              if (dialogOpen) return;
+              const b = showMaskedPopup(uEl, userVal, passVal); attachBoxClick(b);
+            });
+            uEl.addEventListener('blur', hidePopup);
+            uEl.__tsuBound = true;
+          }
+        }
+      } catch(_) {}
+      // フィールド検出時に一度だけ自動表示（過剰表示を避けるためフラグで制御）
+      try {
+        if (!window.__tsu_auto_shown && firstAnchor && !dialogOpen && !openingDialog) {
+          const b = showMaskedPopup(firstAnchor, userVal, passVal);
+          attachBoxClick(b);
+          window.__tsu_auto_shown = true;
+        }
+      } catch(_) {}
 
       // グローバルfocusinで新規/Shadow DOM内のフォーカスにも反応
       if (!window.__tsu_focusin_bound) {
@@ -859,15 +959,15 @@
               if (!inPopup) hidePopup();
               return;
             }
-            // 同一formにユーザID/パスワード両方が無い場合は表示しない
+            // 同一formにユーザID/パスワードのどちらも無い場合のみ抑止（formが無くても表示）
             try {
               const f = el && (el.form || (el.closest && el.closest('form')));
               if (f) {
                 const ins = Array.prototype.slice.call(f.querySelectorAll('input'));
                 const u = ins.find(isUserLike) || null;
                 const p = ins.find(isPassLike) || null;
-                if (!(u && p)) { if (!inPopup) hidePopup(); return; }
-              } else { if (!inPopup) hidePopup(); return; }
+                if (!(u || p)) { if (!inPopup) hidePopup(); return; }
+              }
             } catch(_) { if (!inPopup) hidePopup(); return; }
             const b = showMaskedPopup(el, userVal, passVal);
             attachBoxClick(b);
@@ -931,6 +1031,25 @@
         const observer = new MutationObserver(() => debounced(() => fillAndBind(cachedCreds)));
         observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
         window.__tsu_observer = observer;
+      }
+
+      // URL変化（SPA遷移）時に自動表示を再有効化
+      if (!window.__tsu_url_bound) {
+        const onUrlChange = () => {
+          try {
+            window.__tsu_auto_shown = false;
+            fillAndBind(cachedCreds || { username: '', password: '' });
+          } catch(_) {}
+        };
+        try {
+          const origPush = history.pushState;
+          const origReplace = history.replaceState;
+          history.pushState = function() { try { origPush.apply(this, arguments); } finally { onUrlChange(); } };
+          history.replaceState = function() { try { origReplace.apply(this, arguments); } finally { onUrlChange(); } };
+        } catch(_) {}
+        try { window.addEventListener('popstate', onUrlChange); } catch(_) {}
+        try { window.addEventListener('hashchange', onUrlChange); } catch(_) {}
+        window.__tsu_url_bound = true;
       }
     } catch(_) {}
   };

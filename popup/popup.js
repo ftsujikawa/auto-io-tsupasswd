@@ -5,6 +5,9 @@ const credBox = document.getElementById("cred-box");
 const userIdText = document.getElementById("user-id-text");
 const passwordField = document.getElementById("password-field");
 const toggleBtn = document.getElementById("toggle-visibility");
+// secret 入力
+const secretInput = document.getElementById('secret-input');
+const secretSaveBtn = document.getElementById('secret-save');
 
 async function getActiveTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -62,6 +65,23 @@ window.tsupasswd = window.tsupasswd || {};
     }
   };
 })();
+
+// シークレットの読み込み/保存
+try {
+  if (secretInput) {
+    chrome.storage.local.get({ auth_secret: '' }, (data) => {
+      try { secretInput.value = data && typeof data.auth_secret === 'string' ? data.auth_secret : ''; } catch(_) {}
+    });
+  }
+  if (secretSaveBtn) {
+    secretSaveBtn.addEventListener('click', () => {
+      const v = (secretInput && secretInput.value) || '';
+      chrome.storage.local.set({ auth_secret: v }, () => {
+        try { if (result) { result.textContent = 'secretを保存しました。'; setTimeout(() => { if (result && result.textContent === 'secretを保存しました。') result.textContent = ''; }, 1200); } } catch(_) {}
+      });
+    });
+  }
+} catch(_) {}
 
 async function handleSearch() {
   const query = (userIdInput && userIdInput.value || '').trim();
