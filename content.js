@@ -93,6 +93,28 @@
     return el && el.tagName === "INPUT" && (el.type || "").toLowerCase() === "password";
   };
 
+  // 入力欄が実際に編集可能かどうか
+  const isEditableInput = function(el) {
+    if (!el || el.tagName !== 'INPUT') return false;
+    if (el.disabled) return false;
+    if (el.readOnly) return false;
+    const type = (el.type || '').toLowerCase();
+    if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'checkbox' || type === 'radio') return false;
+    try {
+      const cs = (el.ownerDocument && el.ownerDocument.defaultView && el.ownerDocument.defaultView.getComputedStyle)
+        ? el.ownerDocument.defaultView.getComputedStyle(el) : (window.getComputedStyle ? window.getComputedStyle(el) : null);
+      if (cs) {
+        if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') === 0) return false;
+        const rect = el.getBoundingClientRect && el.getBoundingClientRect();
+        if (rect && (rect.width === 0 || rect.height === 0)) {
+          // 見た目ゼロサイズは編集困難とみなす
+          return false;
+        }
+      }
+    } catch(_) {}
+    return true;
+  };
+
   const setVal = function(el, val) {
     try { el && el.focus && el.focus(); } catch(_){}
     if (!el) return;
@@ -246,6 +268,14 @@
     try { showMaskedPopup.__anchor = anchor; } catch(_) {}
     box.style.display = 'block';
     try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
+    // URLが空なら、当該フレームのURLを初期値として補完
+    try {
+      const urlEl = q('#tsu-save-url');
+      if (urlEl && !urlEl.value) {
+        const win = (anchor && anchor.ownerDocument && anchor.ownerDocument.defaultView) || window;
+        urlEl.value = (win && win.location && win.location.href) ? win.location.href : (location && location.href) || '';
+      }
+    } catch(_) {}
     // 初期フォーカス（タイトル入力にフォーカス）
     try { setTimeout(() => { const ti = q('#tsu-save-title'); if (ti && ti.focus) { ti.focus(); try { ti.select && ti.select(); } catch(_){} } }, 0); } catch(_) {}
     const cancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} try { box.__syncCleanup && box.__syncCleanup(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); };
@@ -297,10 +327,12 @@
     };
 
     const save = (ev) => {
-      try { ev.preventDefault(); ev.stopPropagation(); } catch(_){}
+      try { ev.preventDefault(); ev.stopPropagation(); } catch(_){ }
       if (!validate()) return;
+      // 送信中のUI
+      try { setBtn(false); if (btnOk) btnOk.textContent = '保存中…'; } catch(_){ }
       const entry = buildSavePayload();
-      const host = (window.tsupasswd && window.tsupasswd.host) || 'com.tsu.tsupasswd';
+      const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
       // デフォルトはSAVE_TSUPASSWD。必要に応じてRUN_TSUPASSWDに切替可能（window.tsupasswd.saveVia === 'run'）
       const saveVia = (window.tsupasswd && window.tsupasswd.saveVia) || 'message';
       if (saveVia === 'run') {
@@ -316,7 +348,19 @@
           ? window.tsupasswd.extraArgsSave
           : defaultBuild;
         const args = buildArgs(entry);
+        let done = false; const to = setTimeout(() => {
+          if (done) return;
+          done = true;
+          box.innerHTML = '<div style="padding:8px 4px;">保存がタイムアウトしました。</div>';
+          const okBtn3 = document.createElement('button');
+          okBtn3.id = 'tsu-save-err-ok';
+          okBtn3.style.background = '#1a73e8'; okBtn3.style.color = '#fff'; okBtn3.style.border = 'none'; okBtn3.style.borderRadius = '6px'; okBtn3.style.padding = '6px 10px'; okBtn3.style.cursor = 'pointer'; okBtn3.textContent = 'OK';
+          box.appendChild(okBtn3);
+          okBtn3.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
+          try { if (btnOk) btnOk.textContent = '保存'; setBtn(true); } catch(_) {}
+        }, 25000);
         chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
+          if (done) return; done = true; try { clearTimeout(to); } catch(_) {}
           const ok = !!(resp && resp.ok);
           if (!ok) {
             try { console.debug('RUN_TSUPASSWD(save) failed:', resp); } catch(_) {}
@@ -331,68 +375,73 @@
             const okBtn = box.querySelector('#tsu-save-err-ok');
             if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
           } else {
-            try { box.__syncCleanup && box.__syncCleanup(); } catch(_){}
+            try { box.__syncCleanup && box.__syncCleanup(); } catch(_){ }
             const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp.data.stdout}</pre>` : '';
             box.innerHTML = `<div style=\"padding:8px 4px;\">保存しました。${extra}</div>`;
-            setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} try { location.reload(); } catch(_){} }, 800);
+            setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} }, 200);
           }
         });
       } else {
+        let settled = false;
+        const finishOk = (extraHtml) => {
+          if (settled) return; settled = true;
+          try { box.__syncCleanup && box.__syncCleanup(); } catch(_){ }
+          box.innerHTML = `<div style=\"padding:8px 4px;\">保存しました。${extraHtml || ''}</div>`;
+          setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} }, 200);
+        };
+        const finishErr = (html) => {
+          if (settled) return; settled = true;
+          box.innerHTML = html;
+          const okBtn = box.querySelector('#tsu-save-err-ok');
+          if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
+          try { if (btnOk) btnOk.textContent = '保存'; setBtn(true); } catch(_) {}
+        };
+        const outerTo = setTimeout(() => {
+          finishErr('<div style="padding:8px 4px;">保存がタイムアウトしました。</div><div style="display:flex;justify-content:flex-end;"><button id="tsu-save-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">OK</button></div>');
+        }, 25000);
+
+        const startRunFallback = () => {
+          try {
+            const defaultBuild = (e) => {
+              const a = ['add', e.url, e.username, e.password];
+              if (e.title) { a.push('--title', e.title); }
+              if (e.note) { a.push('--note', e.note); }
+              return a;
+            };
+            const buildArgs = (window.tsupasswd && typeof window.tsupasswd.extraArgsSave === 'function') ? window.tsupasswd.extraArgsSave : defaultBuild;
+            const args = buildArgs(entry);
+            chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp2) => {
+              if (settled) return;
+              const ok2 = !!(resp2 && resp2.ok);
+              if (!ok2) {
+                const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp2.data.stdout}</pre>` : '';
+                const errTxt2 = (resp2 && (resp2.error || (resp2.data && resp2.data.error))) ? `<div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${resp2.error || (resp2.data && resp2.data.error) || ''}</div>` : '';
+                finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`+
+                  `<div>保存に失敗しました。</div>${extra2}${errTxt2}`+
+                  `<div style=\"display:flex;justify-content:flex-end;\">`+
+                    `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`+
+                  `</div>`+
+                `</div>`);
+              } else {
+                const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp2.data.stdout}</pre>` : '';
+                finishOk(extra2);
+              }
+            });
+          } catch(_) {
+            finishErr('<div style="padding:8px 4px;">保存に失敗しました。</div><div style="display:flex;justify-content:flex-end;"><button id="tsu-save-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">OK</button></div>');
+          }
+        };
+
+        let raced = false;
+        const raceTo = setTimeout(() => { if (settled || raced) return; raced = true; startRunFallback(); }, 3000);
         chrome.runtime.sendMessage({ type: 'SAVE_TSUPASSWD', host, entry }, (resp) => {
+          if (settled) return; try { clearTimeout(raceTo); } catch(_) {}
           const ok = !!(resp && resp.ok);
           if (ok) {
-            try { box.__syncCleanup && box.__syncCleanup(); } catch(_){}
             const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp.data.stdout}</pre>` : '';
-            box.innerHTML = `<div style=\"padding:8px 4px;\">保存しました。${extra}</div>`;
-            setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} try { location.reload(); } catch(_){} }, 800);
+            finishOk(extra);
           } else {
-            // フォールバック: RUN_TSUPASSWD を試す
-            try {
-              const defaultBuild = (e) => {
-                const a = ['add', e.url, e.username, e.password];
-                if (e.title) { a.push('--title', e.title); }
-                if (e.note) { a.push('--note', e.note); }
-                return a;
-              };
-              const buildArgs = (window.tsupasswd && typeof window.tsupasswd.extraArgsSave === 'function')
-                ? window.tsupasswd.extraArgsSave
-                : defaultBuild;
-              const args = buildArgs(entry);
-              chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp2) => {
-                const ok2 = !!(resp2 && resp2.ok);
-                if (!ok2) { try { console.debug('RUN_TSUPASSWD(save-fallback) failed:', resp2); } catch(_) {} }
-                if (!ok2) {
-                  const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp2.data.stdout}</pre>` : '';
-                  const errTxt2 = (resp2 && (resp2.error || (resp2.data && resp2.data.error))) ? `<div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${resp2.error || (resp2.data && resp2.data.error) || ''}</div>` : '';
-                  box.innerHTML = `<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`+
-                    `<div>保存に失敗しました。</div>${extra2}${errTxt2}`+
-                    `<div style=\"display:flex;justify-content:flex-end;\">`+
-                      `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`+
-                    `</div>`+
-                  `</div>`;
-                  const okBtn2 = box.querySelector('#tsu-save-err-ok');
-                  if (okBtn2) okBtn2.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
-                } else {
-                  try { box.__syncCleanup && box.__syncCleanup(); } catch(_){}
-                  const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp2.data.stdout}</pre>` : '';
-                  box.innerHTML = `<div style=\"padding:8px 4px;\">保存しました。${extra2}</div>`;
-                  setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} try { location.reload(); } catch(_){} }, 800);
-                }
-              });
-            } catch(_) {
-              box.innerHTML = '<div style="padding:8px 4px;">保存に失敗しました。</div>';
-              const okBtn3 = document.createElement('button');
-              okBtn3.id = 'tsu-save-err-ok';
-              okBtn3.style.background = '#1a73e8';
-              okBtn3.style.color = '#fff';
-              okBtn3.style.border = 'none';
-              okBtn3.style.borderRadius = '6px';
-              okBtn3.style.padding = '6px 10px';
-              okBtn3.style.cursor = 'pointer';
-              okBtn3.textContent = 'OK';
-              box.appendChild(okBtn3);
-              okBtn3.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} try { box.__syncCleanup && box.__syncCleanup(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
-            }
+            if (!raced) { raced = true; startRunFallback(); return; }
           }
         });
       }
@@ -404,6 +453,19 @@
   };
 
   const showMaskedPopup = function(anchor, idText, pwText) {
+    try {
+      // ページ内に「有効な」ユーザID/パスワード欄が一つも無ければ表示しない
+      const inputs = getAllInputsDeep(document);
+      let hasAuthField = false;
+      for (const el of inputs) {
+        if (isEditableInput(el) && (isUserLike(el) || isPassLike(el))) { hasAuthField = true; break; }
+      }
+      if (!hasAuthField) {
+        const box = ensureFixedPopup(anchor);
+        try { box.style.display = 'none'; } catch(_) {}
+        return box;
+      }
+    } catch(_) {}
     // 保存ダイアログが開いている場合は、位置だけ追従して内容は上書きしない
     if (dialogOpen || openingDialog) {
       const doc = (anchor && anchor.ownerDocument) || document;
@@ -991,7 +1053,7 @@
 
       const fetchCreds = () => new Promise((resolve) => {
         if (cachedCreds) { resolve(cachedCreds); return; }
-        const host = (window.tsupasswd && window.tsupasswd.host) || 'com.tsu.tsupasswd';
+        const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
         const args = (window.tsupasswd && Array.isArray(window.tsupasswd.extraArgs)) ? window.tsupasswd.extraArgs.slice() : [];
         args.push(urlStr);
         chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {

@@ -8,6 +8,9 @@ const toggleBtn = document.getElementById("toggle-visibility");
 // secret 入力
 const secretInput = document.getElementById('secret-input');
 const secretSaveBtn = document.getElementById('secret-save');
+// host 入力
+const hostInput = document.getElementById('host-input');
+const hostSaveBtn = document.getElementById('host-save');
 
 async function getActiveTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -23,7 +26,7 @@ window.tsupasswd = window.tsupasswd || {};
         const cfg = window.tsupasswd || {};
         const args = Array.isArray(cfg.extraArgs) ? cfg.extraArgs.slice() : [];
         if (urlStr) args.push(urlStr);
-        const nativeHost = cfg.host || "com.tsu.tsupasswd";
+        const nativeHost = cfg.host || "dev.happyfactory.tsupasswd";
         chrome.runtime.sendMessage({ type: "RUN_TSUPASSWD", host: nativeHost, args: args }, function(resp) {
           if (chrome.runtime.lastError) {
             reject(new Error(chrome.runtime.lastError.message));
@@ -91,6 +94,23 @@ try {
             } catch(_) {}
           });
         } catch(_) {}
+      });
+    });
+  }
+} catch(_) {}
+
+// ホスト名の読み込み/保存
+try {
+  if (hostInput) {
+    chrome.storage.local.get({ host_name: '' }, (data) => {
+      try { hostInput.value = data && typeof data.host_name === 'string' && data.host_name ? data.host_name : (hostInput.placeholder || ''); } catch(_) {}
+    });
+  }
+  if (hostSaveBtn) {
+    hostSaveBtn.addEventListener('click', () => {
+      const v = (hostInput && hostInput.value || '').trim();
+      chrome.storage.local.set({ host_name: v }, () => {
+        try { if (result) { result.textContent = 'ホスト名を保存しました。'; setTimeout(() => { if (result && result.textContent === 'ホスト名を保存しました。') result.textContent = ''; }, 1200); } } catch(_) {}
       });
     });
   }
