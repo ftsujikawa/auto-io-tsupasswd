@@ -12,6 +12,8 @@ const secretSaveBtn = document.getElementById('secret-save');
 const hostInput = document.getElementById('host-input');
 const hostSaveBtn = document.getElementById('host-save');
 
+const esc = (s) => { try { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); } catch(_) { return ''; } };
+
 async function getActiveTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   return tabs[0];
@@ -82,15 +84,33 @@ try {
       chrome.storage.local.set({ auth_secret: v }, () => {
         try {
           if (result) { result.textContent = 'secretを保存しました。認証中…'; }
-          // ネイティブに AUTH を直接依頼（指定されたシークレットを明示的に渡す）
-          chrome.runtime.sendMessage({ type: 'AUTH_TSUPASSWD', mode: 'secret', secret: v }, (resp) => {
+          // AUTH_SECRET を環境へ渡しつつ、`tsupasswd auth <secret>` を実行（envと引数の両方にsecretを付与）
+          chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', args: ['auth', v], secret: v }, (resp) => {
             try {
               if (!resp || resp.ok === false) {
-                if (result) result.textContent = '認証に失敗しました。';
+                if (result) {
+                  const base = '認証に失敗しました。';
+                  const errMsg = (resp && resp.error) ? String(resp.error) : '';
+                  const data = (resp && resp.data) || {};
+                  const stderr = data && data.stderr ? String(data.stderr) : '';
+                  const stdout = data && data.stdout ? String(data.stdout) : '';
+                  const detail = (stderr || stdout)
+                    ? ('<pre style="white-space:pre-wrap;max-height:140px;overflow:auto;margin:6px 0 0;">' + esc(stderr || stdout) + '</pre>')
+                    : '';
+                  result.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px;">'
+                    + '<div style="color:#d93025;">' + esc(base + (errMsg ? (' ' + errMsg) : '')) + '</div>'
+                    + detail
+                    + '<div style="display:flex;justify-content:flex-end;">'
+                      + '<button id="pop-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">OK</button>'
+                    + '</div>'
+                  + '</div>';
+                  const b = document.getElementById('pop-err-ok');
+                  if (b) b.addEventListener('click', () => { result.innerHTML = ''; });
+                }
               } else {
                 if (result) result.textContent = '認証に成功しました。';
+                setTimeout(() => { if (result && result.textContent === '認証に成功しました。') result.textContent = ''; }, 1200);
               }
-              setTimeout(() => { if (result) result.textContent = ''; }, 1800);
             } catch(_) {}
           });
         } catch(_) {}
@@ -129,7 +149,15 @@ async function handleSearch() {
   try {
     const resp = await window.tsupasswd.search(query);
     if (!resp || resp.ok === false) {
-      result.textContent = '検索に失敗しました。' + (resp && resp.error ? ' ' + resp.error : '');
+      const msg = '検索に失敗しました。' + (resp && resp.error ? ' ' + resp.error : '');
+      result.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px;">'
+        + '<div style="color:#d93025;">' + esc(msg) + '</div>'
+        + '<div style="display:flex;justify-content:flex-end;">'
+          + '<button id="pop-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">OK</button>'
+        + '</div>'
+      + '</div>';
+      const b = document.getElementById('pop-err-ok');
+      if (b) b.addEventListener('click', () => { result.innerHTML = ''; });
       return;
     }
     // entries優先、なければ username/password を使う
@@ -143,7 +171,14 @@ async function handleSearch() {
       password = resp.password || '';
     }
     if (!username && !password) {
-      result.textContent = '該当する資格情報が見つかりません。';
+      result.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px;">'
+        + '<div>該当する資格情報が見つかりません。</div>'
+        + '<div style="display:flex;justify-content:flex-end;">'
+          + '<button id="pop-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">OK</button>'
+        + '</div>'
+      + '</div>';
+      const b = document.getElementById('pop-err-ok');
+      if (b) b.addEventListener('click', () => { result.innerHTML = ''; });
       return;
     }
     userIdText.textContent = username || query;
@@ -152,7 +187,15 @@ async function handleSearch() {
     result.textContent = '';
   } catch (e) {
     console.error(e);
-    result.textContent = 'エラー: ' + (e && e.message ? e.message : e);
+    const msg = 'エラー: ' + (e && e.message ? e.message : e);
+    result.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px;">'
+      + '<div style="color:#d93025;">' + esc(msg) + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;">'
+        + '<button id="pop-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">OK</button>'
+      + '</div>'
+    + '</div>';
+    const b = document.getElementById('pop-err-ok');
+    if (b) b.addEventListener('click', () => { result.innerHTML = ''; });
   }
 }
 

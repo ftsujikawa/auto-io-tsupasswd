@@ -30,8 +30,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ネイティブホスト名は環境に合わせて登録してください
     const primary = message.host || "dev.happyfactory.tsupasswd";
     const fallback = "com.tsu.tsupasswd";
-    chrome.storage.local.get({ auth_secret: '', host_name: '' }, (data) => {
+    chrome.storage.local.get({ auth_secret: '', host_name: '', tsupasswd_bin: '' }, (data) => {
       const payload = { args: message.args || [], secret: (data && data.auth_secret) || '' };
+      if (data && data.tsupasswd_bin) payload.bin = data.tsupasswd_bin;
       const pref = message.host || (data && data.host_name) || '';
       const hosts = [pref || primary, primary, fallback].filter(Boolean);
       const uniq = Array.from(new Set(hosts));
@@ -50,8 +51,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const entry = message.entry || {};
     const primary = message.host || "dev.happyfactory.tsupasswd";
     const fallback = "com.tsu.tsupasswd";
-    chrome.storage.local.get({ auth_secret: '', host_name: '' }, (data) => {
+    chrome.storage.local.get({ auth_secret: '', host_name: '', tsupasswd_bin: '' }, (data) => {
       const payload = { action: 'SAVE', entry, secret: (data && data.auth_secret) || '' };
+      if (data && data.tsupasswd_bin) payload.bin = data.tsupasswd_bin;
       const pref = message.host || (data && data.host_name) || '';
       const hosts = [pref || primary, primary, fallback].filter(Boolean);
       const uniq = Array.from(new Set(hosts));
@@ -70,9 +72,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const fallback = "com.tsu.tsupasswd";
     const provided = message.secret || '';
     const mode = message.mode || 'secret';
-    const proceed = (secretFromStore, hostPref) => {
+    const proceed = (secretFromStore, hostPref, binPath) => {
       const secret = provided || secretFromStore || '';
       const payload = { action: 'AUTH', mode, secret };
+      if (binPath) payload.bin = binPath;
       const hosts = [hostPref || primary, primary, fallback].filter(Boolean);
       const uniq = Array.from(new Set(hosts));
       sendNativeWithFallback(uniq, payload, (response) => {
@@ -83,12 +86,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
     };
-    chrome.storage.local.get({ auth_secret: '', host_name: '' }, (data) => {
+    chrome.storage.local.get({ auth_secret: '', host_name: '', tsupasswd_bin: '' }, (data) => {
       const hostPref = message.host || (data && data.host_name) || '';
       if (!provided) {
-        proceed((data && data.auth_secret) || '', hostPref);
+        proceed((data && data.auth_secret) || '', hostPref, (data && data.tsupasswd_bin) || '');
       } else {
-        proceed('', hostPref);
+        proceed('', hostPref, (data && data.tsupasswd_bin) || '');
       }
     });
     return true; // async

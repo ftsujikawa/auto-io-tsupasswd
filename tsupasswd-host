@@ -57,13 +57,30 @@ while True:
         # 実行ファイルの探索（環境依存対策）
         def find_bin():
             cand = []
+            # メッセージからの明示指定を最優先
+            try:
+                m_bin = None
+                if isinstance(msg, dict):
+                    m_bin = msg.get('bin') or msg.get('binPath')
+                if m_bin:
+                    cand.append(str(m_bin))
+            except Exception:
+                pass
+            # 環境変数（ネイティブホストのプロセス環境）
             env = os.environ.get('TSUPASSWD_BIN')
             if env:
                 cand.append(env)
+            # PATH からの探索
             which = shutil.which('tsupasswd')
             if which:
                 cand.append(which)
-            cand.append("/Users/tsu/src/rust/password/target/debug/tsupasswd")
+            # よくある場所
+            common = [
+                '/usr/local/bin/tsupasswd',
+                '/usr/bin/tsupasswd',
+                '/opt/homebrew/bin/tsupasswd',
+            ]
+            cand.extend(common)
             for p in cand:
                 try:
                     if p and os.path.isfile(p) and os.access(p, os.X_OK):
@@ -71,7 +88,7 @@ while True:
                 except Exception:
                     pass
             # 最後の手段として環境変数のみ返す
-            return env or "/Users/tsu/src/rust/password/target/debug/tsupasswd"
+            return None
 
         # 実行時環境を組み立て（AUTH_SECRETなどを渡す）。メッセージのsecretが優先
         def build_run_env(secret=None):
@@ -92,6 +109,10 @@ while True:
             password = str(entry.get('password') or '')
             note = str(entry.get('note') or '')
             bin_path = find_bin()
+            if not bin_path:
+                write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+                last_err = None
+                continue
             # 位置引数: URL ユーザID パスワード（空なら空文字）/ オプション: --title タイトル, --note 備考
             def build_args():
                 if not url:
@@ -126,6 +147,9 @@ while True:
             mode = str(msg.get('mode') or 'secret')
             secret = msg.get('secret') or ''
             bin_path = find_bin()
+            if not bin_path:
+                write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+                continue
             cmd = [bin_path, 'auth', mode]
             try:
                 cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
@@ -137,17 +161,16 @@ while True:
                 write_msg({"ok": False, "error": "tsupasswd auth timeout", "cmd": cmd})
             continue
 
-        # 既存: 検索（資格情報取得）
+        # 既存: 検索（資格情報取得）/ 認証（auth）/ 保存（add）
         args = msg.get('args') or []
         secret = msg.get('secret') or ''
         bin_path = find_bin()
-        # 先頭argが 'add' の場合は保存実行。そうでなければ search --json。
-        is_save_like = False
-        if args:
-            a0 = str(args[0])
-            if a0 == 'add':
-                is_save_like = True
-        if is_save_like:
+        if not bin_path:
+            write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+            continue
+        a0 = str(args[0]) if args else ''
+        if a0 == 'add':
+            # 保存
             cmd = [bin_path] + args
             try:
                 cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=8)
@@ -157,7 +180,19 @@ while True:
                     write_msg({"ok": True, "stdout": cp.stdout.strip(), "cmd": cmd})
             except subprocess.TimeoutExpired:
                 write_msg({"ok": False, "error": "tsupasswd add timeout", "cmd": cmd})
+        elif a0 == 'auth':
+            # 認証: tsupasswd auth <secret or mode>
+            cmd = [bin_path, 'auth'] + list(args[1:])
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                if cp.returncode == 0:
+                    write_msg({"ok": True, "stdout": cp.stdout.strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (cp.stderr.strip() or cp.stdout.strip() or "tsupasswd auth failed"), "stdout": cp.stdout.strip(), "stderr": cp.stderr.strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd auth timeout", "cmd": cmd})
         else:
+            # 検索
             cmd = [bin_path, "search"] + (args or []) + ["--json"]
             try:
                 cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=8)
