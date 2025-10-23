@@ -84,8 +84,8 @@ try {
       chrome.storage.local.set({ auth_secret: v }, () => {
         try {
           if (result) { result.textContent = 'secretを保存しました。認証中…'; }
-          // AUTH_SECRET を環境へ渡しつつ、`tsupasswd auth <secret>` を実行（envと引数の両方にsecretを付与）
-          chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', args: ['auth', v], secret: v }, (resp) => {
+          // AUTH_TSUPASSWD を使用してネイティブに認証要求を送る
+          chrome.runtime.sendMessage({ type: 'AUTH_TSUPASSWD', mode: 'secret', secret: v }, (resp) => {
             try {
               if (!resp || resp.ok === false) {
                 if (result) {

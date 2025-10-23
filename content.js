@@ -379,22 +379,26 @@
           const ok = !!(resp && resp.ok);
           if (!ok) {
             try { console.debug('RUN_TSUPASSWD(save) failed:', resp); } catch(_) {}
-            const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp.data.stdout)}</pre>` : '';
+            const extraStdout = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp.data.stdout)}</pre>` : '';
+            const extraStderr = (resp && resp.data && resp.data.stderr) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp.data.stderr)}</pre>` : '';
+            const hostsArr = (resp && resp.data && Array.isArray(resp.data.hosts)) ? resp.data.hosts : null;
+            const errsArr = (resp && resp.data && Array.isArray(resp.data.errors)) ? resp.data.errors : null;
+            const hostsHtml = hostsArr && hostsArr.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">試行ホスト:</div><ul style=\"margin:4px 0 0 16px;\">${hostsArr.map(h=>`<li>${esc(h)}</li>`).join('')}</ul></div>` : '';
+            const errsHtml = errsArr && errsArr.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">エラー詳細:</div><ul style=\"margin:4px 0 0 16px;\">${errsArr.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
             const errMsg = (resp && (resp.error || (resp.data && resp.data.error))) ? (resp.error || (resp.data && resp.data.error) || '') : '';
             const errTxt = errMsg ? `<div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${esc(errMsg)}</div>` : '';
-            box.innerHTML = `<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`+
-              `<div>保存に失敗しました。</div>${extra}${errTxt}`+
-              `<div style=\"display:flex;justify-content:flex-end;\">`+
-                `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`+
-              `</div>`+
-            `</div>`;
+            box.innerHTML = `<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`
+              + `<div>保存に失敗しました。</div>${extraStdout}${extraStderr}${hostsHtml}${errsHtml}${errTxt}`
+              + `<div style=\"display:flex;justify-content:flex-end;\">`
+                + `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`
+              + `</div>`
+            + `</div>`;
             const okBtn = box.querySelector('#tsu-save-err-ok');
             if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
           } else {
             try { box.__syncCleanup && box.__syncCleanup(); } catch(_){ }
             const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp.data.stdout)}</pre>` : '';
-            box.innerHTML = `<div style=\"padding:8px 4px;\">保存しました。${extra}</div>`;
-            setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} }, 200);
+            finishOk(extra);
           }
         });
       } else {
@@ -430,15 +434,20 @@
               if (settled) return;
               const ok2 = !!(resp2 && resp2.ok);
               if (!ok2) {
-                const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
+                const extraStdout2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
+                const extraStderr2 = (resp2 && resp2.data && resp2.data.stderr) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stderr)}</pre>` : '';
+                const hostsArr2 = (resp2 && resp2.data && Array.isArray(resp2.data.hosts)) ? resp2.data.hosts : null;
+                const errsArr2 = (resp2 && resp2.data && Array.isArray(resp2.data.errors)) ? resp2.data.errors : null;
+                const hostsHtml2 = hostsArr2 && hostsArr2.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">試行ホスト:</div><ul style=\"margin:4px 0 0 16px;\">${hostsArr2.map(h=>`<li>${esc(h)}</li>`).join('')}</ul></div>` : '';
+                const errsHtml2 = errsArr2 && errsArr2.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">エラー詳細:</div><ul style=\"margin:4px 0 0 16px;\">${errsArr2.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
                 const errMsg2 = (resp2 && (resp2.error || (resp2.data && resp2.data.error))) ? (resp2.error || (resp2.data && resp2.data.error) || '') : '';
                 const errTxt2 = errMsg2 ? `<div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${esc(errMsg2)}</div>` : '';
-                finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`+
-                  `<div>保存に失敗しました。</div>${extra2}${errTxt2}`+
-                  `<div style=\"display:flex;justify-content:flex-end;\">`+
-                    `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`+
-                  `</div>`+
-                `</div>`);
+                finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`
+                  + `<div>保存に失敗しました。</div>${extraStdout2}${extraStderr2}${hostsHtml2}${errsHtml2}${errTxt2}`
+                  + `<div style=\"display:flex;justify-content:flex-end;\">`
+                    + `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`
+                  + `</div>`
+                + `</div>`);
               } else {
                 const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
                 finishOk(extra2);
