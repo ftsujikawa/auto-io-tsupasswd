@@ -1,6 +1,6 @@
 {
-  "name": "Chrome Extension Base",
-  "description": "Base template for a Chrome Extension (Manifest V3).",
+  "name": "Auto I/O tsupasswd",
+  "description": "Auto I/O for tsupasswd.",
   "version": "0.1.0",
   "manifest_version": 3,
   "action": {

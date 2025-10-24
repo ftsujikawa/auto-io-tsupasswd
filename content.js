@@ -428,7 +428,9 @@
               if (e.note) { a.push('--note', e.note); }
               return a;
             };
-            const buildArgs = (window.tsupasswd && typeof window.tsupasswd.extraArgsSave === 'function') ? window.tsupasswd.extraArgsSave : defaultBuild;
+            const buildArgs = (window.tsupasswd && typeof window.tsupasswd.extraArgsSave === 'function')
+              ? window.tsupasswd.extraArgsSave
+              : defaultBuild;
             const args = buildArgs(entry);
             chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp2) => {
               if (settled) return;
@@ -454,7 +456,10 @@
               }
             });
           } catch(_) {
-            finishErr('<div style="padding:8px 4px;">保存に失敗しました。</div><div style="display:flex;justify-content:flex-end;"><button id="tsu-save-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">OK</button></div>');
+            const errMsg3 = (_ && (_.message || _.toString())) ? (_.message || _.toString()) : '';
+            const errStack3 = (_ && _.stack) ? _.stack : '';
+            const errTxt3 = (errMsg3 || errStack3) ? `<div style="color:#f28b82;font-size:12px;margin-top:6px;">${esc(errMsg3)}</div>${errStack3 ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(errStack3)}</pre>` : ''}` : '';
+            finishErr(`<div style="display:flex;flex-direction:column;gap:8px;padding:8px 4px;"><div>保存に失敗しました。</div>${errTxt3}<div style="display:flex;justify-content:flex-end;"><button id="tsu-save-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">OK</button></div></div>`);
           }
         };
 
