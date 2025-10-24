@@ -28,8 +28,8 @@
 
 ## 仕様概要
 - **資格情報取得/保存**:
-  - 取得: `background.js` がネイティブホスト `com.tsu.tsupasswd` に `{ args: [<url>, ...] }` を送信し、検索結果（`entries` または `username/password`）を受領。
-  - 保存: `content.js` の保存ダイアログから `SAVE_TSUPASSWD` を送信。`background.js` が `tsupasswd-host` に `{ action: 'SAVE', entry: { title, url, username, password, note } }` を渡します。パスワードは未入力でも保存可能（空文字として扱います）。
+  - 取得: `background.js` がネイティブホスト `dev.happyfactory.tsupasswd` に `{ args: [<url>, ...] }` を送信し、検索結果（`entries` または `username/password`）を受領。
+  - 保存: `content.js` の保存ダイアログから `SAVE_TSUPASSWD` を送信。`background.js` が ネイティブホスト `dev.happyfactory.tsupasswd` に `{ action: 'SAVE', entry: { title, url, username, password, note } }` を渡します。パスワードは未入力でも保存可能（空文字として扱います）。
 - **フィールド検出**:
   - 深い探索（Shadow DOM、iframe含む）
   - 近傍ペアリング（同一`form`優先→親近傍→距離スコア）
@@ -89,7 +89,7 @@
 ## 制限・注意
 - **対象URL**: `http`/`https`/`file` のみ。`chrome://` 等では動作しません。
 - **iframe**: `manifest.json` に `all_frames: true` で全フレームへ注入しますが、サイトのセキュリティ設定や sandbox により期待通り動作しない場合があります。
-- **ネイティブホスト**: `com.tsu.tsupasswd` の登録が必要です（ホストマニフェスト設定）。`TSUPASSWD_BIN` で `tsupasswd` 実行パスを上書き可能です。
+- **ネイティブホスト**: `dev.happyfactory.tsupasswd` の登録が必要です（`dev.happyfactory.tsupasswd.json` マニフェストを参照）。`chrome.storage.local.tsupasswd_bin` で `tsupasswd` 実行パスを上書き可能です。
 
 ## メモ
 - `background` はService Workerのため長時間状態を保持しません。必要に応じて `chrome.storage.*` を使用してください。
