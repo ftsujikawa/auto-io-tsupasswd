@@ -40,6 +40,52 @@
 - **SPA/URL変化対応**:
   - `pushState/replaceState/popstate/hashchange` をフックして、自動表示フラグをリセットし再表示可能に
 
+## メッセージ/処理フロー（実装準拠）
+- **メッセージ種別（`background.js`）**
+  - `PING`
+    - ヘルスチェック用。同期応答 `{ ok: true }`。
+  - `RUN_TSUPASSWD`
+    - ネイティブホストへ `{ args: [...], secret, bin? }` を送信。
+    - 応答が `ok: true` の場合は `{ ok: true, data: <native response> }` を返却。
+    - 失敗時は `{ ok: false, error, data? }` を返却（`stderr/stdout` 等を含むことあり）。
+  - `SAVE_TSUPASSWD`
+    - 保存用。`{ action: 'SAVE', entry: { title, url, username, password, note }, secret, bin? }` を送信。
+  - `AUTH_TSUPASSWD`
+    - 認証用。`{ action: 'AUTH', mode, secret, bin? }` を送信。`mode` 既定値は `secret`。
+
+- **ホスト解決とフォールバック**
+  - 優先順: `message.host` → `chrome.storage.local.host_name` → 既定値 → フォールバック群。
+  - 現在の既定/フォールバックは `dev.happyfactory.tsupasswd`。
+  - 複数候補に対して順次 `chrome.runtime.sendNativeMessage` を試行し、成功した時点で応答。
+
+- **シークレット/バイナリパスの扱い**
+  - `secret`: `message.secret` が無ければ `chrome.storage.local.auth_secret` を使用。
+  - `bin`（任意）: `message.bin` が無ければ `chrome.storage.local.tsupasswd_bin` を使用。
+
+## ポップアップ UI の挙動（`popup/popup.js`）
+- **検索（取得）**
+  - 入力欄のユーザIDをクエリに `window.tsupasswd.search(query)` を実行。
+  - 内部で `RUN_TSUPASSWD` を発行し、ネイティブ応答を JSON として解釈。
+  - 優先的に `entries[0].username/password` を使用。無ければ `username/password` フィールドを参照。
+  - 結果が空ならメッセージ表示。値があれば資格情報ボックスに反映。
+
+- **パスワード表示切替**
+  - ボタンで `password`/`text` をトグル（ラベルは「表示/非表示」に自動切替）。
+
+- **設定（保存）**
+  - シークレット: `#secret-input` → `chrome.storage.local.auth_secret` に保存後、`AUTH_TSUPASSWD` を発行して即時認証を試行。
+  - ホスト名: `#host-input` → `chrome.storage.local.host_name` に保存。
+  - 保存の結果はポップアップ下部に短いステータスとして表示。
+
+## 設定項目と保存先
+- **auth_secret**（`chrome.storage.local`）
+  - ネイティブメッセージング時に付与するシークレット。
+  - ポップアップから保存可能。`AUTH_TSUPASSWD` で検証。
+- **host_name**（`chrome.storage.local`）
+  - 既定ホストを上書きするための任意設定。
+- **tsupasswd_bin**（`chrome.storage.local`）
+  - ネイティブ実行バイナリパスの明示指定（任意）。指定がある場合、ペイロードの `bin` として送出。
+
 ## 制限・注意
 - **対象URL**: `http`/`https`/`file` のみ。`chrome://` 等では動作しません。
 - **iframe**: `manifest.json` に `all_frames: true` で全フレームへ注入しますが、サイトのセキュリティ設定や sandbox により期待通り動作しない場合があります。
