@@ -1,7 +1,7 @@
 {
   "name": "dev.happyfactory.tsupasswd",
   "description": "tsupasswd native host (dev.happyfactory)",
-  "path": "/usr/local/bin/tsupasswd-host",
+  "path": "C:\\Users\\f-tsu\\AppData\\Local\\tsupasswd\\tsupasswd-host.cmd",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://ahbmbieepcmpabkhhkmdppphdmligedi/"

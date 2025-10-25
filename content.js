@@ -3,6 +3,7 @@
   let clickingBox = false;
   let dialogOpen = false;
   let openingDialog = false;
+  let overPopup = false;
 
   // テキストを安全にHTMLとして表示するための簡易エスケープ
   const esc = (s) => {
@@ -167,6 +168,11 @@
       box.addEventListener('click', stopAll, false);
       box.addEventListener('mousedown', stopAll, false);
       box.addEventListener('pointerdown', stopAll, false);
+      // ホバー状態を明示的にトラッキング（:hover 判定の補助）
+      try {
+        box.addEventListener('mouseenter', () => { overPopup = true; }, false);
+        box.addEventListener('mouseleave', () => { overPopup = false; }, false);
+      } catch(_) {}
     }
     return box;
   };
@@ -283,7 +289,7 @@
     } catch(_) {}
     // 初期フォーカス（タイトル入力にフォーカス）
     try { setTimeout(() => { const ti = q('#tsu-save-title'); if (ti && ti.focus) { ti.focus(); try { ti.select && ti.select(); } catch(_){} } }, 0); } catch(_) {}
-    const cancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} try { box.__syncCleanup && box.__syncCleanup(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); };
+    const cancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} try { box.__syncCleanup && box.__syncCleanup(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(true); };
 
     // バリデーション
     const err = q('#tsu-save-error');
@@ -371,7 +377,7 @@
           okBtn3.id = 'tsu-save-err-ok';
           okBtn3.style.background = '#1a73e8'; okBtn3.style.color = '#fff'; okBtn3.style.border = 'none'; okBtn3.style.borderRadius = '6px'; okBtn3.style.padding = '6px 10px'; okBtn3.style.cursor = 'pointer'; okBtn3.textContent = 'OK';
           box.appendChild(okBtn3);
-          okBtn3.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
+          okBtn3.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(true); });
           try { if (btnOk) btnOk.textContent = '保存'; setBtn(true); } catch(_) {}
         }, 25000);
         chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
@@ -394,7 +400,7 @@
               + `</div>`
             + `</div>`;
             const okBtn = box.querySelector('#tsu-save-err-ok');
-            if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
+            if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(true); });
           } else {
             try { box.__syncCleanup && box.__syncCleanup(); } catch(_){ }
             const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp.data.stdout)}</pre>` : '';
@@ -407,7 +413,7 @@
           if (settled) return; settled = true;
           try { box.__syncCleanup && box.__syncCleanup(); } catch(_){ }
           box.innerHTML = `<div style=\"padding:8px 4px;\">保存しました。${extraHtml || ''}</div>`;
-          setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(); } catch(_){} }, 200);
+          setTimeout(() => { dialogOpen = false; openingDialog = false; try { hidePopup(true); } catch(_){} }, 200);
         };
         const finishErr = (html) => {
           if (settled) return; settled = true;
@@ -432,29 +438,44 @@
               ? window.tsupasswd.extraArgsSave
               : defaultBuild;
             const args = buildArgs(entry);
-            chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp2) => {
-              if (settled) return;
-              const ok2 = !!(resp2 && resp2.ok);
-              if (!ok2) {
-                const extraStdout2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
-                const extraStderr2 = (resp2 && resp2.data && resp2.data.stderr) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stderr)}</pre>` : '';
-                const hostsArr2 = (resp2 && resp2.data && Array.isArray(resp2.data.hosts)) ? resp2.data.hosts : null;
-                const errsArr2 = (resp2 && resp2.data && Array.isArray(resp2.data.errors)) ? resp2.data.errors : null;
-                const hostsHtml2 = hostsArr2 && hostsArr2.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">試行ホスト:</div><ul style=\"margin:4px 0 0 16px;\">${hostsArr2.map(h=>`<li>${esc(h)}</li>`).join('')}</ul></div>` : '';
-                const errsHtml2 = errsArr2 && errsArr2.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">エラー詳細:</div><ul style=\"margin:4px 0 0 16px;\">${errsArr2.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
-                const errMsg2 = (resp2 && (resp2.error || (resp2.data && resp2.data.error))) ? (resp2.error || (resp2.data && resp2.data.error) || '') : '';
-                const errTxt2 = errMsg2 ? `<div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${esc(errMsg2)}</div>` : '';
-                finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`
-                  + `<div>保存に失敗しました。</div>${extraStdout2}${extraStderr2}${hostsHtml2}${errsHtml2}${errTxt2}`
-                  + `<div style=\"display:flex;justify-content:flex-end;\">`
-                    + `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`
-                  + `</div>`
-                + `</div>`);
-              } else {
-                const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
-                finishOk(extra2);
+            const canMsgRun = (typeof chrome !== 'undefined') && chrome.runtime && chrome.runtime.id;
+            if (!canMsgRun) {
+              finishErr('<div style="padding:8px 4px;">拡張機能のコンテキストが無効です。ページを再読み込みしてください。</div><div style="display:flex;justify-content:flex-end;"><button id="tsu-save-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">OK</button></div>');
+            } else {
+              try {
+                chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp2) => {
+                  if (settled) return;
+                  if (chrome.runtime && chrome.runtime.lastError) {
+                    const msg2 = (chrome.runtime.lastError && chrome.runtime.lastError.message) || '';
+                    finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\"><div>保存に失敗しました。</div><div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${esc(msg2)}</div><div style=\"display:flex;justify-content:flex-end;\"><button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button></div></div>`);
+                    return;
+                  }
+                  const ok2 = !!(resp2 && resp2.ok);
+                  if (!ok2) {
+                    const extraStdout2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
+                    const extraStderr2 = (resp2 && resp2.data && resp2.data.stderr) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stderr)}</pre>` : '';
+                    const hostsArr2 = (resp2 && resp2.data && Array.isArray(resp2.data.hosts)) ? resp2.data.hosts : null;
+                    const errsArr2 = (resp2 && resp2.data && Array.isArray(resp2.data.errors)) ? resp2.data.errors : null;
+                    const hostsHtml2 = hostsArr2 && hostsArr2.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">試行ホスト:</div><ul style=\"margin:4px 0 0 16px;\">${hostsArr2.map(h=>`<li>${esc(h)}</li>`).join('')}</ul></div>` : '';
+                    const errsHtml2 = errsArr2 && errsArr2.length ? `<div style=\"margin-top:6px;\"><div style=\"font-size:12px;color:#9aa0a6;\">エラー詳細:</div><ul style=\"margin:4px 0 0 16px;\">${errsArr2.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
+                    const errMsg2 = (resp2 && (resp2.error || (resp2.data && resp2.data.error))) ? (resp2.error || (resp2.data && resp2.data.error) || '') : '';
+                    const errTxt2 = errMsg2 ? `<div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${esc(errMsg2)}</div>` : '';
+                    finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\">`
+                      + `<div>保存に失敗しました。</div>${extraStdout2}${extraStderr2}${hostsHtml2}${errsHtml2}${errTxt2}`
+                      + `<div style=\"display:flex;justify-content:flex-end;\">`
+                        + `<button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button>`
+                      + `</div>`
+                    + `</div>`);
+                  } else {
+                    const extra2 = (resp2 && resp2.data && resp2.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${esc(resp2.data.stdout)}</pre>` : '';
+                    finishOk(extra2);
+                  }
+                });
+              } catch (e) {
+                const msg2 = (e && (e.message || e.toString())) || '';
+                finishErr(`<div style=\"display:flex;flex-direction:column;gap:8px;padding:8px 4px;\"><div>保存に失敗しました。</div><div style=\"color:#f28b82;font-size:12px;margin-top:6px;\">${esc(msg2)}</div><div style=\"display:flex;justify-content:flex-end;\"><button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button></div></div>`);
               }
-            });
+            }
           } catch(_) {
             const errMsg3 = (_ && (_.message || _.toString())) ? (_.message || _.toString()) : '';
             const errStack3 = (_ && _.stack) ? _.stack : '';
@@ -465,16 +486,36 @@
 
         let raced = false;
         const raceTo = setTimeout(() => { if (settled || raced) return; raced = true; startRunFallback(); }, 3000);
-        chrome.runtime.sendMessage({ type: 'SAVE_TSUPASSWD', host, entry }, (resp) => {
-          if (settled) return; try { clearTimeout(raceTo); } catch(_) {}
-          const ok = !!(resp && resp.ok);
-          if (ok) {
-            const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp.data.stdout}</pre>` : '';
-            finishOk(extra);
-          } else {
-            if (!raced) { raced = true; startRunFallback(); return; }
+        const canMsgSave = (typeof chrome !== 'undefined') && chrome.runtime && chrome.runtime.id;
+        if (!canMsgSave) {
+          // 拡張機能のコンテキストが無効
+          if (!raced) { raced = true; startRunFallback(); } else {
+            finishErr('<div style="padding:8px 4px;">拡張機能のコンテキストが無効です。ページを再読み込みしてください。</div><div style="display:flex;justify-content:flex-end;"><button id="tsu-save-err-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">OK</button></div>');
           }
-        });
+        } else {
+          try {
+            chrome.runtime.sendMessage({ type: 'SAVE_TSUPASSWD', host, entry }, (resp) => {
+              if (settled) return; try { clearTimeout(raceTo); } catch(_) {}
+              if (chrome.runtime && chrome.runtime.lastError) {
+                const msg = (chrome.runtime.lastError && chrome.runtime.lastError.message) || '';
+                if (!raced) { raced = true; startRunFallback(); return; }
+                finishErr(`<div style="padding:8px 4px;">保存に失敗しました（${esc(msg)}）。ページを再読み込みしてください。</div><div style=\"display:flex;justify-content:flex-end;\"><button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button></div>`);
+                return;
+              }
+              const ok = !!(resp && resp.ok);
+              if (ok) {
+                const extra = (resp && resp.data && resp.data.stdout) ? `<pre style=\"white-space:pre-wrap;max-height:120px;overflow:auto;margin:6px 0 0;\">${resp.data.stdout}</pre>` : '';
+                finishOk(extra);
+              } else {
+                if (!raced) { raced = true; startRunFallback(); return; }
+              }
+            });
+          } catch (e) {
+            const msg = (e && (e.message || e.toString())) || '';
+            if (!raced) { raced = true; startRunFallback(); return; }
+            finishErr(`<div style="padding:8px 4px;">保存に失敗しました（${esc(msg)}）。ページを再読み込みしてください。</div><div style=\"display:flex;justify-content:flex-end;\"><button id=\"tsu-save-err-ok\" style=\"background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;\">OK</button></div>`);
+          }
+        }
       }
     };
     const btnCancel = q('#tsu-save-cancel');
@@ -702,6 +743,7 @@
                 if (uEl) filledSet.add(uEl);
                 if (pEl) filledSet.add(pEl);
               }
+              try { hidePopup(true); } catch(_) {}
               setTimeout(() => { clickingBox = false; }, 0);
               return;
             }
@@ -709,6 +751,7 @@
             forceApply(first.user || null, first.pass || null, uval, pval);
             if (first.user) filledSet.add(first.user);
             if (first.pass) filledSet.add(first.pass);
+            try { hidePopup(true); } catch(_) {}
           } catch(_) {}
           finally {
             setTimeout(() => { clickingBox = false; }, 30);
@@ -799,6 +842,7 @@
                 if (uEl) filledSet.add(uEl);
                 if (pEl) filledSet.add(pEl);
               }
+              try { hidePopup(true); } catch(_) {}
               return;
             }
             // 同じformの最初の1組にのみ入力（誤入力防止）
@@ -806,6 +850,7 @@
             forceApply(first.user || null, first.pass || null, uval, pval);
             if (first.user) filledSet.add(first.user);
             if (first.pass) filledSet.add(first.pass);
+            try { hidePopup(true); } catch(_) {}
           } catch(_) {}
           finally {
             setTimeout(() => { clickingBox = false; }, 30);
@@ -931,13 +976,23 @@
     }
     return box;
   };
-  const hidePopup = function() {
-    if (clickingBox || dialogOpen) return; // ポップクリック中/ダイアログ表示中は隠さない
+  const hidePopup = function(force) {
+    if ((clickingBox && !force) || dialogOpen) return; // ポップクリック中/ダイアログ表示中は隠さない
     try {
       const doc = (showMaskedPopup.__anchor && showMaskedPopup.__anchor.ownerDocument) || document;
       const box = doc.getElementById('tsupasswd-inline-popup');
-      if (box) box.style.display = 'none';
+      if (!box) return;
+      const ae = doc.activeElement;
+      if (!force) {
+        if (overPopup) return;
+        try { if (box.matches && box.matches(':hover')) return; } catch(_) {}
+        if (ae && (ae === box || (box.contains && box.contains(ae)))) return;
+      }
+      box.style.display = 'none';
     } catch(_) {}
+  };
+  const hidePopupDelayed = function() {
+    try { setTimeout(() => { try { hidePopup(false); } catch(_) {} }, 120); } catch(_) {}
   };
 
   const filledSet = new WeakSet();
@@ -971,7 +1026,7 @@
           setVal(pass, passVal);
           filledSet.add(user); filledSet.add(pass);
         }
-        hidePopup();
+        hidePopup(true);
       } catch(_) {}
       // 次のtickでクリック状態解除
       setTimeout(() => { clickingBox = false; }, 0);
@@ -1012,7 +1067,7 @@
           };
           user.addEventListener('pointerdown', showOnClick, true);
           user.addEventListener('click', showOnClick);
-          user.addEventListener('blur', hidePopup);
+          user.addEventListener('blur', hidePopupDelayed);
           user.__tsuBound = true;
         }
         if (!pass.__tsuBound) {
@@ -1027,7 +1082,7 @@
           };
           pass.addEventListener('pointerdown', showOnClickP, true);
           pass.addEventListener('click', showOnClickP);
-          pass.addEventListener('blur', hidePopup);
+          pass.addEventListener('blur', hidePopupDelayed);
           pass.__tsuBound = true;
         }
       }
@@ -1041,7 +1096,7 @@
             const showOnClickU = function(){ if (dialogOpen) return; const b = showMaskedPopup(uEl, userVal, passVal); attachBoxClick(b); };
             uEl.addEventListener('pointerdown', showOnClickU, true);
             uEl.addEventListener('click', showOnClickU);
-            uEl.addEventListener('blur', hidePopup);
+            uEl.addEventListener('blur', hidePopupDelayed);
             uEl.__tsuBound = true;
           }
           // パスワード欄しかないページでも同様にフォールバック表示
@@ -1052,7 +1107,7 @@
             const showOnClickOnlyP = function(){ if (dialogOpen) return; const b = showMaskedPopup(pEl, userVal, passVal); attachBoxClick(b); };
             pEl.addEventListener('pointerdown', showOnClickOnlyP, true);
             pEl.addEventListener('click', showOnClickOnlyP);
-            pEl.addEventListener('blur', hidePopup);
+            pEl.addEventListener('blur', hidePopupDelayed);
             pEl.__tsuBound = true;
           }
         }
