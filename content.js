@@ -419,7 +419,7 @@
           if (settled) return; settled = true;
           box.innerHTML = html;
           const okBtn = box.querySelector('#tsu-save-err-ok');
-          if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(); });
+          if (okBtn) okBtn.addEventListener('click', (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_){} dialogOpen = false; openingDialog = false; hidePopup(true); });
           try { if (btnOk) btnOk.textContent = '保存'; setBtn(true); } catch(_) {}
         };
         const outerTo = setTimeout(() => {
