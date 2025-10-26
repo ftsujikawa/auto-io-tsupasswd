@@ -1,0 +1,18 @@
+html, body { height: 100%; }
+body { margin: 0; padding: 16px; background: #000000; color: #E5E7EB; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; line-height: 1.5; }
+a { color: #60A5FA; text-decoration: none; }
+a:hover { text-decoration: underline; }
+#search-section label { display: block; margin: 8px 0; }
+#search-section #q-search { margin-top: 8px; }
+input[type="text"], input[type="password"] { background: #111827; color: #F9FAFB; border: 1px solid #374151; border-radius: 6px; padding: 8px 10px; min-width: 260px; }
+button { background: #1F2937; color: #F9FAFB; border: 1px solid #374151; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+button:hover { background: #374151; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+#status { color: #9CA3AF; }
+table { width: 100%; border-collapse: collapse; background: #0B0F17; }
+th, td { border: 1px solid #1F2937; }
+thead th { background: #111827; text-align: left; padding: 10px; font-weight: 600; color: #E5E7EB; }
+tbody td { padding: 8px; }
+tbody tr:nth-child(odd) { background: #0B0F17; }
+tbody tr:nth-child(even) { background: #0F1623; }
+section { background: transparent; }
