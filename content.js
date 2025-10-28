@@ -35,6 +35,25 @@
       return ins.some((i) => (isUserLike(i) || isPassLike(i)) && isProbablyVisible(i));
     } catch(_) { return false; }
   };
+  // ユーザ名のみのステップを許可するホスト（例: JetBrains）
+  const isUsernameOnlyAllowedHost = function() {
+    try {
+      const h = location && location.hostname ? String(location.hostname) : '';
+      return (
+        h === 'account.jetbrains.com'
+      );
+    } catch(_) { return false; }
+  };
+  // 同一フォーム内に可視のパスワード入力があるか
+  const hasVisiblePassInSameForm = function(el) {
+    try {
+      if (!el) return false;
+      const form = el.form || (el.closest && el.closest('form'));
+      const scope = form || el.ownerDocument;
+      const ins = Array.prototype.slice.call(scope.querySelectorAll('input'));
+      return ins.some((i) => isPassLike(i) && isProbablyVisible(i));
+    } catch(_) { return false; }
+  };
   // 同一フォーム内にユーザID/パスワード両方がある場合は、常にパスワード欄を優先してアンカーにする
   const pickPreferredAnchor = function(el) {
     try {
@@ -383,8 +402,12 @@
 
   const presentAuthPopup = function(anchor) {
     try {
-      // アンカーがユーザID/パスワード入力なら常に許可。そうでなければページに可視の認証欄がある場合のみ許可
-      if (!(anchor && (isUserLike(anchor) || isPassLike(anchor))) && !hasAuthInputs(document)) return null;
+      // パスワード欄は常に許可。ユーザ名欄は、(a) 同一フォームに可視パスワードがある か (b) 許可ホストのみ許可
+      if (!(anchor && (isUserLike(anchor) || isPassLike(anchor)))) return null;
+      if (isUserLike(anchor) && !isPassLike(anchor)) {
+        const sameFormHasPass = hasVisiblePassInSameForm(anchor);
+        if (!sameFormHasPass && !isUsernameOnlyAllowedHost()) return null;
+      }
     } catch(_) {}
     try {
       if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) {
@@ -513,6 +536,24 @@
           password = normalize((data && data.password) != null ? data.password : (pick(data, passKeys) || findInObj(data, passKeys)));
           entriesAll = [toSimple(data)];
         }
+        // 資格情報が全く無い場合は表示を中止
+        try {
+          if (!ok || !data) { hidePopup(true); return; }
+          const noUser = !username || String(username).trim() === '';
+          const noPass = !password || String(password).trim() === '';
+          // 空エントリを除去
+          if (Array.isArray(entriesAll)) {
+            entriesAll = entriesAll.filter((e) => {
+              try {
+                const uu = (e && e.username) ? String(e.username).trim() : '';
+                const pp = (e && e.password) ? String(e.password).trim() : '';
+                return !!(uu || pp);
+              } catch(_) { return false; }
+            });
+          }
+          const noEntries = !Array.isArray(entriesAll) || entriesAll.length === 0;
+          if (noUser && noPass && noEntries) { hidePopup(true); return; }
+        } catch(_) {}
         // 一覧HTMLを生成
         let listHtml = '';
         if (Array.isArray(entriesAll) && entriesAll.length) {
@@ -727,6 +768,11 @@
             // ポップアップ外をクリックしたら、抑止中でも必ず閉じる
             if (!inPopup && !el) { hidePopup(true); return; }
             if (!(el && (isUserLike(el) || isPassLike(el)))) { if (!inPopup) { hidePopup(true); } return; }
+            // ユーザ名欄は、同一フォームに可視パスワードが無い場合は許可ホストのみ
+            if (isUserLike(el) && !isPassLike(el)) {
+              const sameFormHasPass = hasVisiblePassInSameForm(el);
+              if (!sameFormHasPass && !isUsernameOnlyAllowedHost()) { if (!inPopup) { hidePopup(true); } return; }
+            }
             // hasAuthInputs は presentAuthPopup 側でガードするためここでは不要
             // ここからは表示トリガ。抑止中/直後は新規表示を抑える
             try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
