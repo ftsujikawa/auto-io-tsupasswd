@@ -72,6 +72,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // async
   }
+  if (message.type === "DELETE_TSUPASSWD") {
+    // payload は { action: 'DELETE', entry: { url, username } }
+    const entry = message.entry || {};
+    chrome.storage.local.get({ auth_secret: '', host_name: '', tsupasswd_bin: '' }, (data) => {
+      const payload = { action: 'DELETE', entry, secret: (message && message.secret) || (data && data.auth_secret) || '' };
+      const binPath = (message && message.bin) || (data && data.tsupasswd_bin) || '';
+      if (binPath) payload.bin = binPath;
+      const hosts = buildHostCandidates(message.host || '', (data && data.host_name) || '');
+      sendNativeWithFallback(hosts, payload, (response) => {
+        if (!response || (response && response.ok === false)) {
+          const base = { ok: false, error: (response && response.error) || "native error" };
+          const dataOut = response && response.data ? response.data : {};
+          sendResponse({ ...base, data: dataOut });
+        } else {
+          sendResponse({ ok: true, data: response });
+        }
+      });
+    });
+    return true; // async
+  }
   if (message.type === "AUTH_TSUPASSWD") {
     const provided = message.secret || '';
     const mode = message.mode || 'secret';

@@ -114,6 +114,30 @@ while True:
                 write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
                 last_err = None
                 continue
+
+        elif action == 'DELETE':
+            # 削除リクエスト: { action: 'DELETE', entry: { id } }
+            entry = msg.get('entry') or {}
+            secret = msg.get('secret') or ''
+            rid = str(entry.get('id') or '')
+            bin_path = find_bin()
+            if not bin_path:
+                write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+                continue
+            # 必須: id
+            if not rid:
+                write_msg({"ok": False, "error": "missing required fields (id)", "cmd": ["delete", rid or '']})
+                continue
+            cmd = [bin_path, 'delete', rid]
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                if cp.returncode == 0:
+                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd delete failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd delete timeout", "cmd": cmd})
+            continue
             # 位置引数: URL ユーザID パスワード（空なら空文字）/ オプション: --title タイトル, --note 備考
             def build_args():
                 if not url:
@@ -192,6 +216,28 @@ while True:
                     write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd auth failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
             except subprocess.TimeoutExpired:
                 write_msg({"ok": False, "error": "tsupasswd auth timeout", "cmd": cmd})
+        elif a0 == 'update':
+            # 更新: tsupasswd update <id> [--url U] [--user NAME] [--password PASS | --length N] [--title T] [--note N]
+            # 一部実装では 'update' が存在しない可能性があるため 'set' や 'edit' にフォールバック
+            attempts = []
+            subcmds = ['update', 'set', 'edit']
+            last_err = None
+            for sub in subcmds:
+                try:
+                    cmd = [bin_path, sub] + list(args[1:])
+                    cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                    if cp.returncode == 0:
+                        write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                        last_err = None
+                        break
+                    else:
+                        attempts.append({"subcmd": sub, "stderr": (cp.stderr or '').strip(), "stdout": (cp.stdout or '').strip(), "code": cp.returncode})
+                        last_err = ((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or f"tsupasswd {sub} failed"
+                except subprocess.TimeoutExpired:
+                    attempts.append({"subcmd": sub, "stderr": "timeout"})
+                    last_err = f"tsupasswd {sub} timeout"
+            if last_err is not None:
+                write_msg({"ok": False, "error": last_err, "attempts": attempts})
         else:
             # 検索
             cmd = [bin_path, "search"] + (args or []) + ["--json"]
@@ -209,6 +255,7 @@ while True:
                         title_keys = {"title", "name", "label"}
                         url_keys = {"url", "uri", "link"}
                         note_keys = {"note", "memo", "remark", "comment"}
+                        id_keys = {"id", "entry_id", "credential_id"}
 
                         entries = []
                         # 結果がリスト、もしくはオブジェクト内の配列フィールドを探索
@@ -227,6 +274,7 @@ while True:
                         for item in cand_list:
                             try:
                                 e = {
+                                    "id": _find_in_obj(item, id_keys) or "",
                                     "title": _find_in_obj(item, title_keys) or "",
                                     "url": _find_in_obj(item, url_keys) or "",
                                     "username": _find_in_obj(item, user_keys) or "",

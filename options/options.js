@@ -70,6 +70,7 @@ restore();
     if (resp && Array.isArray(resp.entries)) {
       for (const e of resp.entries) {
         list.push({
+          id: esc(e.id || ''),
           title: esc(e.title || ''),
           url: esc(e.url || ''),
           username: esc(e.username || ''),
@@ -79,6 +80,7 @@ restore();
       }
     } else if (resp && (resp.username || resp.password)) {
       list.push({
+        id: esc(resp.id || ''),
         title: esc(resp.title || ''),
         url: esc(resp.url || ''),
         username: esc(resp.username || ''),
@@ -106,6 +108,7 @@ restore();
   function attachRowEvents(tr, idx) {
     const inputs = tr.querySelectorAll('input');
     const btn = tr.querySelector('.btn-update');
+    const delBtn = tr.querySelector('.btn-delete');
     const updateDisabled = () => { if (btn) btn.disabled = !rowChanged(idx); };
     inputs.forEach(i => i.addEventListener('input', updateDisabled));
     updateDisabled();
@@ -124,27 +127,74 @@ restore();
       });
     }
     if (btn) btn.addEventListener('click', async () => {
-      const entry = {
+      const rid = tr.getAttribute('data-id') || '';
+      if (!rid) {
+        statusEl.textContent = '更新に失敗しました IDが不明です';
+        return;
+      }
+      const cur = {
         title: tr.querySelector('.f-title')?.value || '',
         url: tr.querySelector('.f-url')?.value || '',
         username: tr.querySelector('.f-username')?.value || '',
         password: tr.querySelector('.f-password')?.value || '',
         note: tr.querySelector('.f-note')?.value || '',
       };
+      const orig = originals[idx] || {};
+      const args = ['update', rid];
+      if (cur.url !== undefined && cur.url !== orig.url && cur.url.trim() !== '') { args.push('--url', cur.url); }
+      if (cur.username !== undefined && cur.username !== orig.username && cur.username.trim() !== '') { args.push('--user', cur.username); }
+      if (cur.password !== undefined && cur.password !== orig.password && cur.password !== '') { args.push('--password', cur.password); }
+      if (cur.title !== undefined && cur.title !== orig.title && cur.title.trim() !== '') { args.push('--title', cur.title); }
+      if (cur.note !== undefined && cur.note !== orig.note && cur.note.trim() !== '') { args.push('--note', cur.note); }
+      if (args.length === 2) {
+        statusEl.textContent = '変更がありません';
+        return;
+      }
       statusEl.textContent = '更新中…';
       try {
-        chrome.runtime.sendMessage({ type: 'SAVE_TSUPASSWD', entry }, (resp) => {
+        chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', args }, (resp) => {
           if (!resp || resp.ok === false) {
             statusEl.textContent = '更新に失敗しました' + (resp && resp.error ? (' ' + resp.error) : '');
             return;
           }
           statusEl.textContent = '更新しました';
-          originals[idx] = { ...entry };
+          originals[idx] = { ...cur };
           btn.disabled = true;
           setTimeout(() => { if (statusEl.textContent === '更新しました') statusEl.textContent = ''; }, 1200);
         });
       } catch(e) {
         statusEl.textContent = '更新エラー: ' + (e && e.message ? e.message : e);
+      }
+    });
+
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      const rid = tr.getAttribute('data-id') || '';
+      if (!rid) {
+        statusEl.textContent = '削除に失敗しました IDが不明です';
+        return;
+      }
+      statusEl.textContent = '削除中…';
+      try {
+        chrome.runtime.sendMessage({ type: 'DELETE_TSUPASSWD', entry: { id: rid } }, (resp) => {
+          if (!resp || resp.ok === false) {
+            statusEl.textContent = '削除に失敗しました' + (resp && resp.error ? (' ' + resp.error) : '');
+            return;
+          }
+          statusEl.textContent = '削除しました';
+          // 行を削除し、originals も更新
+          try {
+            const idxNum = parseInt(tr.getAttribute('data-idx') || '-1', 10);
+            if (!isNaN(idxNum) && idxNum >= 0) {
+              originals.splice(idxNum, 1);
+            }
+            tr.parentElement?.removeChild(tr);
+            // 残りの行の data-idx を振り直し
+            Array.from(tbody.querySelectorAll('tr')).forEach((row, i) => row.setAttribute('data-idx', String(i)));
+          } catch(_) {}
+          setTimeout(() => { if (statusEl.textContent === '削除しました') statusEl.textContent = ''; }, 1200);
+        });
+      } catch(e) {
+        statusEl.textContent = '削除エラー: ' + (e && e.message ? e.message : e);
       }
     });
   }
@@ -154,6 +204,7 @@ restore();
     entries.forEach((e, idx) => {
       const tr = document.createElement('tr');
       tr.setAttribute('data-idx', String(idx));
+      if (e.id) tr.setAttribute('data-id', String(e.id));
       tr.innerHTML = `
         <td><input class="f-title" type="text" value="${e.title}" /></td>
         <td><input class="f-url" type="text" value="${e.url}" /></td>
@@ -165,7 +216,12 @@ restore();
           </div>
         </td>
         <td><input class="f-note" type="text" value="${e.note || ''}" /></td>
-        <td><button class="btn-update">更新</button></td>
+        <td>
+          <div style="display:flex; gap:6px;">
+            <button class="btn-update">更新</button>
+            <button class="btn-delete" style="background:#7f1d1d;border-color:#7f1d1d;">削除</button>
+          </div>
+        </td>
       `;
       tbody.appendChild(tr);
       attachRowEvents(tr, idx);
