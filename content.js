@@ -9,11 +9,230 @@
   const esc = (s) => {
     try { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } catch(_) { return ''; }
   };
+  // 明確にメール/ユーザIDと判断できる入力か（誤検出を避けつつ広めに）
+  const isClearlyEmailLike = function(el) {
+    try {
+      if (!el || el.nodeType !== 1) return false;
+      const tag = (el.tagName || '').toLowerCase();
+      const type = (el.getAttribute && (el.getAttribute('type') || '')) || '';
+      const name = (el.getAttribute && (el.getAttribute('name') || '')) || '';
+      const id = (el.getAttribute && (el.getAttribute('id') || '')) || '';
+      const ac = (el.getAttribute && (el.getAttribute('autocomplete') || '')) || '';
+      const im = (el.getAttribute && (el.getAttribute('inputmode') || '')) || '';
+      const hint = `${name} ${id} ${ac}`.toLowerCase();
+      const typeL = String(type).toLowerCase();
+      const imL = String(im).toLowerCase();
+      if (typeL === 'email') return true;
+      if (imL === 'email') return true;
+      if (/(^|\b)(email|e-mail|mail|username|user|userid|login|account)(\b|$)/.test(hint)) return true;
+      if (tag === 'input' && typeL === 'text' && /(email|username)/.test(hint)) return true;
+      if (tag === 'input' && ac && /(email|username)/i.test(ac)) return true;
+      return false;
+    } catch(_) { return false; }
+  };
 
   const byHint = function(el) {
     const s = (el && (el.name || "")) + " " + (el && (el.id || "")) + " " + (el && (el.autocomplete || ""));
     return s.toLowerCase();
   };
+  // ページからパスキー情報を推測抽出
+  const extractPasskeyFromPage = function(rootDoc) {
+    const doc = rootDoc || document;
+    const out = { rp: '', cred: '', user: '', pub: '', count: '', transports: '' };
+    // WebAuthnフックのキャッシュを優先
+    try {
+      const c = (window && window.__tsu_pk_cache) || {};
+      if (c.rpId) out.rp = c.rpId;
+      if (c.credentialIdB64) out.cred = c.credentialIdB64;
+      if (c.userHandleB64) out.user = c.userHandleB64;
+      if (c.publicKeyB64) out.pub = c.publicKeyB64; // まだ未設定の可能性あり
+      if (typeof c.signCount === 'number') out.count = String(c.signCount);
+    } catch(_) {}
+    try { if (!out.rp) out.rp = (location && location.hostname) ? String(location.hostname) : ''; } catch(_) {}
+    try {
+      const nodes = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, [data-credential-id], [data-user-handle], [data-public-key]'));
+      for (const n of nodes) {
+        const hint = (n.getAttribute && ((n.getAttribute('name') || '') + ' ' + (n.getAttribute('id') || '') + ' ' + (n.getAttribute('data-name') || ''))).toLowerCase();
+        const val = (n.getAttribute && (n.getAttribute('value') || n.textContent || '')) || (n.value != null ? String(n.value) : '');
+        if (!out.cred && /cred|credential/.test(hint)) { out.cred = (val || '').trim(); }
+        if (!out.user && /user.*handle|user[_-]?id|uid\b/.test(hint)) { out.user = (val || '').trim(); }
+        if (!out.pub && /public.*key|pubkey|publickey/.test(hint)) { out.pub = (val || '').trim(); }
+        if (!out.count && /sign[_-]?count|signcount|counter/.test(hint)) { out.count = (val || '').trim(); }
+        if (!out.transports && /transport/.test(hint)) { out.transports = (val || '').trim(); }
+      }
+      // script内のJSON/変数から抽出（軽量な正規表現）
+      if (!(out.cred && out.user && out.pub)) {
+        const scripts = Array.prototype.slice.call(doc.scripts || []);
+        for (const s of scripts) {
+          const txt = (s && s.textContent) ? s.textContent : '';
+          if (!txt) continue;
+          if (!out.cred) { const m = txt.match(/credential[_-]?id["']?\s*[:=]\s*["']([^"']+)/i); if (m) out.cred = m[1].trim(); }
+          if (!out.user) { const m = txt.match(/user[_-]?handle["']?\s*[:=]\s*["']([^"']+)/i); if (m) out.user = m[1].trim(); }
+          if (!out.pub) { const m = txt.match(/public[_-]?key["']?\s*[:=]\s*["']([^"']+)/i); if (m) out.pub = m[1].trim(); }
+          if (!out.count) { const m = txt.match(/sign[_-]?count["']?\s*[:=]\s*([0-9]+)/i); if (m) out.count = m[1].trim(); }
+          if (!out.transports) { const m = txt.match(/transports["']?\s*[:=]\s*["']([^"']+)/i); if (m) out.transports = m[1].trim(); }
+          if (out.cred && out.user && out.pub) break;
+        }
+      }
+    } catch(_) {}
+    return out;
+  };
+
+  // Base64URL エンコード（ArrayBuffer -> string）
+  const b64u = (buf) => {
+    try {
+      const b = new Uint8Array(buf);
+      let s = '';
+      for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+      return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+    } catch(_) { return ''; }
+  };
+  const toU8 = (buf) => {
+    try { return buf instanceof Uint8Array ? buf : new Uint8Array(buf); } catch(_) { return new Uint8Array(0); }
+  };
+  // 簡易CBORデコーダ（必要最小限: uint, nint, bytes, text, array, map, simple/float）
+  const cborDecodeItem = (u8, offset) => {
+    const len = u8.length;
+    if (offset >= len) throw new Error('CBOR: OOB');
+    const ib = u8[offset];
+    const major = ib >> 5;
+    let ai = ib & 0x1f;
+    let pos = offset + 1;
+    const readLen = (n) => { if (pos + n > len) throw new Error('CBOR: OOB'); let v = 0; for (let i=0;i<n;i++) v = (v<<8) | u8[pos+i]; pos += n; return v; };
+    const readAddl = () => {
+      if (ai < 24) return ai;
+      if (ai === 24) return readLen(1);
+      if (ai === 25) return readLen(2);
+      if (ai === 26) return readLen(4);
+      if (ai === 27) { const hi = readLen(4), lo = readLen(4); return hi * 0x100000000 + lo; }
+      throw new Error('CBOR: indef or reserved not supported');
+    };
+    if (major === 0) { // unsigned int
+      const v = readAddl();
+      return { value: v, length: pos - offset };
+    } else if (major === 1) { // negative int
+      const v = readAddl();
+      return { value: -1 - v, length: pos - offset };
+    } else if (major === 2) { // bytes
+      const l = readAddl();
+      if (pos + l > len) throw new Error('CBOR: bytes OOB');
+      const val = u8.slice(pos, pos + l);
+      pos += l;
+      return { value: val, length: pos - offset };
+    } else if (major === 3) { // text
+      const l = readAddl();
+      if (pos + l > len) throw new Error('CBOR: text OOB');
+      const val = new TextDecoder('utf-8').decode(u8.slice(pos, pos + l));
+      pos += l;
+      return { value: val, length: pos - offset };
+    } else if (major === 4) { // array
+      const l = readAddl();
+      const arr = [];
+      for (let i=0;i<l;i++) { const it = cborDecodeItem(u8, pos); arr.push(it.value); pos += it.length; }
+      return { value: arr, length: pos - offset };
+    } else if (major === 5) { // map
+      const l = readAddl();
+      const obj = {};
+      for (let i=0;i<l;i++) {
+        const k = cborDecodeItem(u8, pos); pos += k.length;
+        const v = cborDecodeItem(u8, pos); pos += v.length;
+        obj[k.value] = v.value;
+      }
+      return { value: obj, length: pos - offset };
+    } else if (major === 6) { // tag -> skip tag and decode tagged item
+      /* const tag = */ readAddl();
+      const inner = cborDecodeItem(u8, pos);
+      pos += inner.length;
+      return { value: inner.value, length: pos - offset };
+    } else if (major === 7) {
+      // simple/float: treat as null-ish
+      return { value: null, length: pos - offset };
+    }
+    throw new Error('CBOR: unknown major');
+  };
+  const cborDecode = (u8) => cborDecodeItem(u8, 0);
+  // attestationObject から authData を取り出し、credentialPublicKey（生CBOR）と signCount を抽出
+  const parseAttestation = (u8) => {
+    try {
+      const top = cborDecode(u8).value; // map
+      const authData = top && top.authData ? toU8(top.authData) : null;
+      if (!authData || authData.length < 37) return null;
+      let p = 0;
+      /* const rpIdHash = */ authData.slice(p, p+32); p += 32;
+      const flags = authData[p]; p += 1;
+      const signCount = ((authData[p] << 24) | (authData[p+1] << 16) | (authData[p+2] << 8) | authData[p+3]) >>> 0; p += 4;
+      const AT = (flags & 0x40) !== 0;
+      if (!AT) return { signCount };
+      p += 16; // aaguid
+      const credIdLen = (authData[p] << 8) | authData[p+1]; p += 2;
+      p += credIdLen; // credential id
+      // ここから credentialPublicKey (CBOR). デコードして長さを取得し、その生バイトを切り出す
+      const pkItem = cborDecodeItem(authData, p);
+      const raw = authData.slice(p, p + pkItem.length);
+      return { signCount, publicKeyRaw: raw };
+    } catch(_) { return null; }
+  };
+
+  // WebAuthn フック（1度だけ）
+  try {
+    if (!window.__tsu_webauthn_hooked && navigator && navigator.credentials) {
+      window.__tsu_pk_cache = window.__tsu_pk_cache || {};
+      const origCreate = navigator.credentials.create.bind(navigator.credentials);
+      const origGet = navigator.credentials.get.bind(navigator.credentials);
+      navigator.credentials.create = async function(options) {
+        try {
+          const pub = options && options.publicKey;
+          if (pub) {
+            try {
+              if (pub.rp && pub.rp.id) window.__tsu_pk_cache.rpId = String(pub.rp.id);
+              if (pub.user && pub.user.id) {
+                const u = pub.user.id; // ArrayBufferSource
+                const buf = (u instanceof ArrayBuffer) ? u : (ArrayBuffer.isView(u) ? u.buffer : null);
+                if (buf) window.__tsu_pk_cache.userHandleB64 = b64u(buf);
+              }
+            } catch(_) {}
+          }
+        } catch(_) {}
+        const cred = await origCreate(options);
+        try {
+          if (cred && cred.type === 'public-key') {
+            try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
+            const resp = cred.response;
+            // attestationObject から公開鍵を抽出する処理は未実装。バイナリ自体は保持しておく。
+            try {
+              if (resp && resp.attestationObject) {
+                window.__tsu_pk_cache.attestationB64 = b64u(resp.attestationObject);
+                const parsed = parseAttestation(toU8(resp.attestationObject));
+                if (parsed) {
+                  if (typeof parsed.signCount === 'number') window.__tsu_pk_cache.signCount = parsed.signCount;
+                  if (parsed.publicKeyRaw) window.__tsu_pk_cache.publicKeyB64 = b64u(parsed.publicKeyRaw);
+                }
+              }
+            } catch(_) {}
+          }
+        } catch(_) {}
+        return cred;
+      };
+      navigator.credentials.get = async function(options) {
+        try {
+          const pub = options && options.publicKey;
+          if (pub) {
+            try { if (pub.rpId) window.__tsu_pk_cache.rpId = String(pub.rpId); } catch(_) {}
+          }
+        } catch(_) {}
+        const cred = await origGet(options);
+        try {
+          if (cred && cred.type === 'public-key') {
+            try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
+            const resp = cred.response;
+            try { if (resp && resp.userHandle) window.__tsu_pk_cache.userHandleB64 = b64u(resp.userHandle); } catch(_) {}
+          }
+        } catch(_) {}
+        return cred;
+      };
+      window.__tsu_webauthn_hooked = true;
+    }
+  } catch(_) {}
   const isProbablyVisible = function(el) {
     try {
       if (!el) return false;
@@ -27,21 +246,43 @@
       return true;
     } catch(_) { return true; }
   };
+  const isTextboxLike = function(el) {
+    try {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.matches && el.matches('input, textarea')) return true;
+      const role = (el.getAttribute && el.getAttribute('role')) || '';
+      const ce = (el.getAttribute && el.getAttribute('contenteditable')) || '';
+      if (String(role).toLowerCase() === 'textbox') return true;
+      if (ce && String(ce).toLowerCase() !== 'false') return true;
+      return false;
+    } catch(_) { return false; }
+  };
   const hasAuthInputs = function(rootDoc) {
     try {
       const doc = rootDoc || document;
-      const ins = Array.prototype.slice.call(doc.querySelectorAll('input'));
+      const nodes = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, [role="textbox"], [contenteditable]'));
       // 可視なユーザID欄またはパスワード欄のどちらか一方でもあれば true
-      return ins.some((i) => (isUserLike(i) || isPassLike(i)) && isProbablyVisible(i));
+      return nodes.some((i) => {
+        try {
+          if (!isProbablyVisible(i)) return false;
+          if (i.matches && i.matches('input')) return (isUserLike(i) || isPassLike(i));
+          // 非inputでも、ユーザ名のみ許可文脈では textbox をユーザ名欄として扱う
+          if (isUsernameOnlyAllowedContext() && isTextboxLike(i)) return true;
+          return false;
+        } catch(_) { return false; }
+      });
     } catch(_) { return false; }
   };
-  // ユーザ名のみのステップを許可するホスト（例: JetBrains）
-  const isUsernameOnlyAllowedHost = function() {
+  // ユーザ名のみのステップを許可する文脈（JetBrainsホスト全体、Amazonはサインインページのみ）
+  const isUsernameOnlyAllowedContext = function() {
     try {
       const h = location && location.hostname ? String(location.hostname) : '';
-      return (
-        h === 'account.jetbrains.com'
-      );
+      const p = location && location.pathname ? String(location.pathname) : '';
+      if (!h) return false;
+      if (h === 'account.jetbrains.com') return true; // ログインドメイン専用
+      if ((h === 'www.amazon.co.jp' || h === 'amazon.co.jp') && p.startsWith('/ap/signin')) return true;
+      if (((h === 'www.disneyplus.com') || (h === 'disneyplus.com') || h.endsWith('.disneyplus.com')) && p.startsWith('/identity/')) return true;
+      return false;
     } catch(_) { return false; }
   };
   // 同一フォーム内に可視のパスワード入力があるか
@@ -277,12 +518,14 @@
         box.addEventListener('mousedown', (e) => { setSuppress(); try { e.stopPropagation(); } catch(_) {} }, true);
         box.addEventListener('click', (e) => {
           setSuppress();
-          try { e.stopPropagation(); } catch(_) {}
           try {
             const t = e.target;
             const interactive = !!(t && (t.closest && (t.closest('button') || t.closest('input') || t.closest('textarea'))));
-            if (!interactive) hidePopup(true);
-          } catch(_) { try { hidePopup(true); } catch(_) {} }
+            if (!interactive) {
+              try { e.stopPropagation(); } catch(_) {}
+              hidePopup(true);
+            }
+          } catch(_) { try { e.stopPropagation(); hidePopup(true); } catch(_) {} }
         }, true);
       } catch(_) {}
     }
@@ -400,13 +643,88 @@
     return box;
   };
 
+  // パスキー保存ダイアログ（rp_id, credential_id, user_handle, public_key, [--sign-count], [--transports]）
+  const openPasskeyDialog = function(anchor, prefill) {
+    const box = ensureFixedPopup(anchor);
+    if (!box) return null;
+    dialogOpen = true;
+    const urlStr = location && location.href ? String(location.href) : '';
+    const rpIdInit = (prefill && prefill.rp) ? String(prefill.rp) : ((location && location.hostname) ? String(location.hostname) : '');
+    const html = '<div style="display:flex;flex-direction:column;gap:8px;width:100%;">'
+      + '<div style="font-weight:600;">パスキーを保存</div>'
+      + '<div style="display:flex;flex-direction:column;gap:6px;">'
+        + '<label style="font-size:12px;">RP ID<input id="tsu-pk-rp" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc(rpIdInit) + '"></label>'
+        + '<label style="font-size:12px;">Credential ID<input id="tsu-pk-cred" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.cred) ? prefill.cred : '') + '"></label>'
+        + '<label style="font-size:12px;">User Handle<input id="tsu-pk-user" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.user) ? prefill.user : '') + '"></label>'
+        + '<label style="font-size:12px;">Public Key<input id="tsu-pk-pub" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.pub) ? prefill.pub : '') + '"></label>'
+        + '<div style="display:flex;gap:8px;">'
+          + '<label style="font-size:12px;flex:1;">Sign Count<input id="tsu-pk-count" type="number" min="0" step="1" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.count) ? prefill.count : '') + '"></label>'
+          + '<label style="font-size:12px;flex:1;">Transports (CSV)<input id="tsu-pk-trans" type="text" placeholder="usb,nfc,ble,internal" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.transports) ? prefill.transports : '') + '"></label>'
+        + '</div>'
+      + '</div>'
+      + '<div style="display:flex;gap:8px;">'
+        + '<button id="tsu-pk-cancel" style="flex:1;background:#5f6368;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;">キャンセル</button>'
+        + '<button id="tsu-pk-ok" style="flex:1;background:#34a853;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;">保存</button>'
+      + '</div>'
+    + '</div>';
+    box.innerHTML = html;
+    box.style.display = 'block';
+    try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
+
+    const q = (sel) => box.querySelector(sel);
+    const rpEl = q('#tsu-pk-rp');
+    const credEl = q('#tsu-pk-cred');
+    const userEl = q('#tsu-pk-user');
+    const pubEl = q('#tsu-pk-pub');
+    const cntEl = q('#tsu-pk-count');
+    const trEl = q('#tsu-pk-trans');
+    const btnCancel = q('#tsu-pk-cancel');
+    const btnOk = q('#tsu-pk-ok');
+
+    const onCancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} dialogOpen = false; hidePopup(true); };
+    const onSave = (ev) => {
+      try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
+      const rp = (rpEl && rpEl.value || '').trim();
+      const cred = (credEl && credEl.value || '').trim();
+      const usr = (userEl && userEl.value || '').trim();
+      const pub = (pubEl && pubEl.value || '').trim();
+      const cntRaw = (cntEl && cntEl.value || '').trim();
+      const trans = (trEl && trEl.value || '').trim();
+      if (!rp || !cred || !usr || !pub) {
+        try { alert('必須: RP ID, Credential ID, User Handle, Public Key'); } catch(_) {}
+        return;
+      }
+      const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+      const args = ['passkey', 'add', rp, cred, usr, pub];
+      if (cntRaw !== '') { args.push('--sign-count', String(parseInt(cntRaw, 10) || 0)); }
+      if (trans !== '') { args.push('--transports', trans); }
+      chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
+        try {
+          if (resp && resp.ok) {
+            dialogOpen = false; hidePopup(true);
+          } else {
+            try { alert('保存に失敗しました: ' + (resp && (resp.error || resp.stderr || resp.stdout) || 'unknown')); } catch(_) {}
+          }
+        } catch(_) { dialogOpen = false; hidePopup(true); }
+      });
+    };
+    if (btnCancel) { btnCancel.addEventListener('click', onCancel, true); btnCancel.addEventListener('pointerdown', onCancel, true); }
+    if (btnOk) { btnOk.addEventListener('click', onSave, true); btnOk.addEventListener('pointerdown', onSave, true); }
+    return box;
+  };
+
   const presentAuthPopup = function(anchor) {
     try {
-      // パスワード欄は常に許可。ユーザ名欄は、(a) 同一フォームに可視パスワードがある か (b) 許可ホストのみ許可
-      if (!(anchor && (isUserLike(anchor) || isPassLike(anchor)))) return null;
-      if (isUserLike(anchor) && !isPassLike(anchor)) {
-        const sameFormHasPass = hasVisiblePassInSameForm(anchor);
-        if (!sameFormHasPass && !isUsernameOnlyAllowedHost()) return null;
+      // パスワード欄は常に許可。ユーザ名欄は、(a) 明確にメール/ユーザID欄なら常に許可 (b) それ以外は同一フォームに可視パス有 or 許可文脈
+      const userLike = !!(anchor && (isUserLike(anchor) || (isUsernameOnlyAllowedContext() && isTextboxLike(anchor))));
+      const passLike = !!(anchor && isPassLike(anchor));
+      if (!(anchor && (userLike || passLike))) return null;
+      if (userLike && !passLike) {
+        const clearEmail = isClearlyEmailLike(anchor);
+        if (!clearEmail) {
+          const sameFormHasPass = hasVisiblePassInSameForm(anchor);
+          if (!sameFormHasPass && !isUsernameOnlyAllowedContext()) return null;
+        }
       }
     } catch(_) {}
     try {
@@ -536,9 +854,8 @@
           password = normalize((data && data.password) != null ? data.password : (pick(data, passKeys) || findInObj(data, passKeys)));
           entriesAll = [toSimple(data)];
         }
-        // 資格情報が全く無い場合は表示を中止
+        // 資格情報が無い場合でもポップアップは表示し、保存ボタンのみ使えるようにする
         try {
-          if (!ok || !data) { hidePopup(true); return; }
           const noUser = !username || String(username).trim() === '';
           const noPass = !password || String(password).trim() === '';
           // 空エントリを除去
@@ -552,7 +869,10 @@
             });
           }
           const noEntries = !Array.isArray(entriesAll) || entriesAll.length === 0;
-          if (noUser && noPass && noEntries) { hidePopup(true); return; }
+          // 何も無ければ entriesAll は空のままにし、以降で『未検出』として表示する
+          if ((!ok || !data) && noUser && noPass) {
+            entriesAll = [];
+          }
         } catch(_) {}
         // 一覧HTMLを生成
         let listHtml = '';
@@ -573,13 +893,21 @@
               + '</div>';
           }
         } else {
-          listHtml = '<div style="color:#9aa0a6;">未検出</div>';
+          listHtml = ''
+            + '<div class="tsu-entry" style="padding:6px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;background:rgba(255,255,255,0.03);">'
+            + '  <div style="display:flex;flex-direction:column;gap:2px;font-size:12px;">'
+            + '    <div>ユーザID: <span>未検出</span></div>'
+            + '    <div>パスワード: <span>未検出</span></div>'
+            + '  </div>'
+            + '</div>';
         }
         // 検索結果がそろってから描画（一覧 + 保存ボタン）
         const bodyHtml = '<div style="display:flex;flex-direction:column;gap:8px;width:100%;">'
           + '<div id="tsu-list" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;">' + listHtml + '</div>'
           + '<div>'
             + '<button id="tsu-save-entry" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;width:100%;">tsupasswdに保存</button>'
+            + '<div style="height:6px;"></div>'
+            + '<button id="tsu-save-passkey" style="background:#34a853;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;width:100%;">パスキーを保存</button>'
           + '</div>'
         + '</div>';
         box.innerHTML = bodyHtml;
@@ -626,8 +954,43 @@
         const saveBtn = box.querySelector('#tsu-save-entry');
         if (saveBtn) {
           const onOpen = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} openSaveDialog(anchor, '', ''); };
-          saveBtn.addEventListener('click', onOpen, true);
-          saveBtn.addEventListener('pointerdown', onOpen, true);
+          saveBtn.addEventListener('click', onOpen, false);
+          saveBtn.addEventListener('pointerdown', onOpen, false);
+        }
+        // パスキー保存ボタン→パスキー保存フォーム
+        const savePasskeyBtn = box.querySelector('#tsu-save-passkey');
+        if (savePasskeyBtn) {
+          const onOpenPK = (ev) => {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
+            // ページから自動抽出し、必要4項目が揃えば即保存。足りない場合はダイアログで補完。
+            try {
+              const ext = extractPasskeyFromPage((anchor && anchor.ownerDocument) || document);
+              const rp = (ext.rp || '').trim();
+              const cred = (ext.cred || '').trim();
+              const usr = (ext.user || '').trim();
+              const pub = (ext.pub || '').trim();
+              const cnt = (ext.count || '').trim();
+              const tr = (ext.transports || '').trim();
+              if (rp && cred && usr && pub) {
+                const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+                const args = ['passkey', 'add', rp, cred, usr, pub];
+                if (cnt !== '') args.push('--sign-count', String(parseInt(cnt, 10) || 0));
+                if (tr !== '') args.push('--transports', tr);
+                chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
+                  try {
+                    if (resp && resp.ok) { dialogOpen = false; hidePopup(true); }
+                    else { openPasskeyDialog(anchor); }
+                  } catch(_) { openPasskeyDialog(anchor); }
+                });
+              } else {
+                openPasskeyDialog(anchor, ext);
+              }
+            } catch(_) {
+              openPasskeyDialog(anchor);
+            }
+          };
+          savePasskeyBtn.addEventListener('click', onOpenPK, false);
+          savePasskeyBtn.addEventListener('pointerdown', onOpenPK, false);
         }
       } catch(_) {}
     });
@@ -746,7 +1109,8 @@
               const rectOk = !!(r && r.width > 0 && r.height > 0);
               const visOk = isProbablyVisible(anchor);
               const ptrOk = !!(window.__tsu_last_pointer);
-              ok = rectOk && visOk && ptrOk;
+              // ユーザ名のみ許可文脈では、初回はポインタ座標が無くても許可（クリック不要で1度だけ表示）
+              ok = rectOk && visOk && (ptrOk || isUsernameOnlyAllowedContext());
             } catch(_) { ok = false; }
             if (ok) {
               const b = presentAuthPopup(anchor); attachBoxClick(b);
@@ -764,14 +1128,23 @@
             const path = (e.composedPath && e.composedPath()) || [];
             const t = (path && path.length ? path[0] : e.target);
             const inPopup = !!(t && (t.closest ? t.closest('#tsupasswd-inline-popup') : null));
-            const el = (t && t.nodeType === 1) ? (t.matches && t.matches('input') ? t : (t.closest && t.closest('input'))) : null;
+            const el = (t && t.nodeType === 1)
+              ? (t.matches && t.matches('input, textarea, [role="textbox"], [contenteditable]')
+                  ? t
+                  : (t.closest && t.closest('input, textarea, [role="textbox"], [contenteditable]')))
+              : null;
             // ポップアップ外をクリックしたら、抑止中でも必ず閉じる
             if (!inPopup && !el) { hidePopup(true); return; }
-            if (!(el && (isUserLike(el) || isPassLike(el)))) { if (!inPopup) { hidePopup(true); } return; }
+            const userLikeEl = !!(el && (isUserLike(el) || (isUsernameOnlyAllowedContext() && isTextboxLike(el))));
+            const passLikeEl = !!(el && isPassLike(el));
+            if (!(el && (userLikeEl || passLikeEl))) { if (!inPopup) { hidePopup(true); } return; }
             // ユーザ名欄は、同一フォームに可視パスワードが無い場合は許可ホストのみ
-            if (isUserLike(el) && !isPassLike(el)) {
-              const sameFormHasPass = hasVisiblePassInSameForm(el);
-              if (!sameFormHasPass && !isUsernameOnlyAllowedHost()) { if (!inPopup) { hidePopup(true); } return; }
+            if (userLikeEl && !passLikeEl) {
+              const clearEmail = isClearlyEmailLike(el);
+              if (!clearEmail) {
+                const sameFormHasPass = hasVisiblePassInSameForm(el);
+                if (!sameFormHasPass && !isUsernameOnlyAllowedContext()) { if (!inPopup) { hidePopup(true); } return; }
+              }
             }
             // hasAuthInputs は presentAuthPopup 側でガードするためここでは不要
             // ここからは表示トリガ。抑止中/直後は新規表示を抑える
@@ -787,8 +1160,56 @@
             attachBoxClick(b);
           } catch(_) {}
         };
+        const onFocusIn = (e) => {
+          try {
+            if (dialogOpen) return;
+            if (!isUsernameOnlyAllowedContext()) return;
+            const path = (e.composedPath && e.composedPath()) || [];
+            const t = (path && path.length ? path[0] : e.target);
+            const el = (t && t.nodeType === 1)
+              ? (t.matches && t.matches('input, textarea, [role="textbox"], [contenteditable]')
+                  ? t
+                  : (t.closest && t.closest('input, textarea, [role="textbox"], [contenteditable]')))
+              : null;
+            if (!el) return;
+            const userLikeEl = !!(el && (isUserLike(el) || (isUsernameOnlyAllowedContext() && isTextboxLike(el))));
+            const passLikeEl = !!(el && isPassLike(el));
+            if (!(el && (userLikeEl || passLikeEl))) return;
+            // ここからは表示トリガ。抑止中/直後は新規表示を抑える
+            try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
+            const pref = pickPreferredAnchor(el);
+            try { if (window.__tsu_current_anchor && window.__tsu_current_anchor !== pref) return; } catch(_) {}
+            const b = presentAuthPopup(pref);
+            attachBoxClick(b);
+          } catch(_) {}
+        };
         document.addEventListener('click', onClickIn, true);
         document.addEventListener('pointerdown', onClickIn, true);
+        document.addEventListener('focusin', onFocusIn, true);
+        // 入力開始でも表示させる（username-only 文脈の textbox-like 要素）
+        const onKeyDownIn = (e) => {
+          try {
+            if (dialogOpen) return;
+            if (!isUsernameOnlyAllowedContext()) return;
+            const path = (e.composedPath && e.composedPath()) || [];
+            const t = (path && path.length ? path[0] : e.target);
+            const el = (t && t.nodeType === 1)
+              ? (t.matches && t.matches('input, textarea, [role="textbox"], [contenteditable]')
+                  ? t
+                  : (t.closest && t.closest('input, textarea, [role="textbox"], [contenteditable]')))
+              : null;
+            if (!el) return;
+            const userLikeEl = !!(el && (isUserLike(el) || (isUsernameOnlyAllowedContext() && isTextboxLike(el))));
+            const passLikeEl = !!(el && isPassLike(el));
+            if (!(el && (userLikeEl || passLikeEl))) return;
+            try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
+            const pref = pickPreferredAnchor(el);
+            try { if (window.__tsu_current_anchor && window.__tsu_current_anchor !== pref) return; } catch(_) {}
+            const b = presentAuthPopup(pref);
+            attachBoxClick(b);
+          } catch(_) {}
+        };
+        document.addEventListener('keydown', onKeyDownIn, true);
         window.__tsu_click_bound = true;
       }
       // Escapeで閉じる

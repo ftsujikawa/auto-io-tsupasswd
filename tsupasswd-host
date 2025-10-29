@@ -205,6 +205,17 @@ while True:
                     write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
             except subprocess.TimeoutExpired:
                 write_msg({"ok": False, "error": "tsupasswd add timeout", "cmd": cmd})
+        elif a0 == 'passkey':
+            # パスキー操作: tsupasswd passkey add <rp_id> <credential_id> <user_handle> <public_key> [--sign-count N] [--transports CSV]
+            cmd = [bin_path] + args
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                if cp.returncode == 0:
+                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd passkey failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd passkey timeout", "cmd": cmd})
         elif a0 == 'auth':
             # 認証: tsupasswd auth <secret or mode>
             cmd = [bin_path, 'auth'] + list(args[1:])

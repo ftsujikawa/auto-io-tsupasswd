@@ -255,3 +255,102 @@ restore();
 
   qSearch.addEventListener('click', doSearch);
 })();
+
+// ==========================
+// パスキー検索（オプション）
+// ==========================
+(function(){
+  const q = document.getElementById('pk-q');
+  const btn = document.getElementById('pk-search');
+  const status = document.getElementById('pk-status');
+  const tbody = document.getElementById('pk-tbody');
+
+  if (!btn || !tbody) return;
+
+  async function runArgs(args) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', args }, (resp) => {
+          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+          if (!resp || resp.ok === false) { reject(new Error((resp && resp.error) || 'native error')); return; }
+          resolve(resp);
+        });
+      } catch(e) { reject(e); }
+    });
+  }
+
+  function esc(s) { try { return String(s || ''); } catch(_) { return ''; } }
+  function b64short(s) { s = esc(s); if (s.length > 20) return s.slice(0,10) + '…' + s.slice(-9); return s; }
+
+  function normalizeList(stdout) {
+    try {
+      const data = JSON.parse(stdout || '[]');
+      const arr = Array.isArray(data) ? data : (Array.isArray(data.entries) ? data.entries : [data]);
+      return arr.map((e) => ({
+        rp_id: esc(e.rp_id || e.rpId || e.rp || ''),
+        credential_id: esc(e.credential_id || e.credentialId || e.id || ''),
+        user_handle: esc(e.user_handle || e.userHandle || ''),
+        public_key: esc(e.public_key || e.publicKey || ''),
+        sign_count: esc(e.sign_count || e.signCount || ''),
+        transports: esc(e.transports || ''),
+      }));
+    } catch(_) { return []; }
+  }
+
+  function render(list) {
+    tbody.innerHTML = '';
+    list.forEach((e, idx) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${esc(e.rp_id)}</td>
+        <td><code title="${esc(e.credential_id)}">${b64short(e.credential_id)}</code></td>
+        <td><code title="${esc(e.user_handle)}">${b64short(e.user_handle)}</code></td>
+        <td>${esc(e.sign_count)}</td>
+        <td>${esc(e.transports)}</td>
+        <td>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="pk-copy" data-k="credential_id">IDコピー</button>
+            <button class="pk-copy" data-k="user_handle">UHコピー</button>
+            <button class="pk-copy" data-k="public_key">PKコピー</button>
+          </div>
+        </td>
+      `;
+      tr.dataset.idx = String(idx);
+      // public_key は列に出さないが保持
+      tr.__public_key = e.public_key;
+      tbody.appendChild(tr);
+    });
+    // クリップボードコピー
+    tbody.querySelectorAll('.pk-copy').forEach((b) => {
+      b.addEventListener('click', () => {
+        try {
+          const tr = b.closest('tr'); if (!tr) return;
+          const key = b.getAttribute('data-k') || '';
+          let val = '';
+          if (key === 'credential_id') val = tr.querySelector('td:nth-child(2) code')?.getAttribute('title') || '';
+          else if (key === 'user_handle') val = tr.querySelector('td:nth-child(3) code')?.getAttribute('title') || '';
+          else if (key === 'public_key') val = tr.__public_key || '';
+          if (val) navigator.clipboard.writeText(val);
+        } catch(_) {}
+      });
+    });
+  }
+
+  async function doSearch() {
+    const query = (q && q.value || '').trim();
+    if (!query) { status.textContent = '検索語を入力してください'; return; }
+    status.textContent = '検索中…';
+    try {
+      const resp = await runArgs(['passkey', 'search', query, '--json']);
+      const stdout = resp && resp.data && resp.data.stdout;
+      const list = normalizeList(typeof stdout === 'string' ? stdout : JSON.stringify(stdout || '[]'));
+      render(list);
+      status.textContent = `${list.length} 件`;
+    } catch(e) {
+      status.textContent = 'エラー: ' + (e && e.message ? e.message : e);
+    }
+  }
+
+  btn.addEventListener('click', doSearch);
+})();
+
