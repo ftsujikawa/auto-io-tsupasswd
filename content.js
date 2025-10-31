@@ -906,8 +906,6 @@
           + '<div id="tsu-list" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;">' + listHtml + '</div>'
           + '<div>'
             + '<button id="tsu-save-entry" style="background:#1a73e8;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;width:100%;">tsupasswdに保存</button>'
-            + '<div style="height:6px;"></div>'
-            + '<button id="tsu-save-passkey" style="background:#34a853;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;width:100%;">パスキーを保存</button>'
           + '</div>'
         + '</div>';
         box.innerHTML = bodyHtml;
@@ -956,41 +954,6 @@
           const onOpen = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} openSaveDialog(anchor, '', ''); };
           saveBtn.addEventListener('click', onOpen, false);
           saveBtn.addEventListener('pointerdown', onOpen, false);
-        }
-        // パスキー保存ボタン→パスキー保存フォーム
-        const savePasskeyBtn = box.querySelector('#tsu-save-passkey');
-        if (savePasskeyBtn) {
-          const onOpenPK = (ev) => {
-            try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
-            // ページから自動抽出し、必要4項目が揃えば即保存。足りない場合はダイアログで補完。
-            try {
-              const ext = extractPasskeyFromPage((anchor && anchor.ownerDocument) || document);
-              const rp = (ext.rp || '').trim();
-              const cred = (ext.cred || '').trim();
-              const usr = (ext.user || '').trim();
-              const pub = (ext.pub || '').trim();
-              const cnt = (ext.count || '').trim();
-              const tr = (ext.transports || '').trim();
-              if (rp && cred && usr && pub) {
-                const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
-                const args = ['passkey', 'add', rp, cred, usr, pub];
-                if (cnt !== '') args.push('--sign-count', String(parseInt(cnt, 10) || 0));
-                if (tr !== '') args.push('--transports', tr);
-                chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
-                  try {
-                    if (resp && resp.ok) { dialogOpen = false; hidePopup(true); }
-                    else { openPasskeyDialog(anchor); }
-                  } catch(_) { openPasskeyDialog(anchor); }
-                });
-              } else {
-                openPasskeyDialog(anchor, ext);
-              }
-            } catch(_) {
-              openPasskeyDialog(anchor);
-            }
-          };
-          savePasskeyBtn.addEventListener('click', onOpenPK, false);
-          savePasskeyBtn.addEventListener('pointerdown', onOpenPK, false);
         }
       } catch(_) {}
     });
