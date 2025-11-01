@@ -128,15 +128,25 @@ while True:
             if not rid:
                 write_msg({"ok": False, "error": "missing required fields (id)", "cmd": ["delete", rid or '']})
                 continue
-            cmd = [bin_path, 'delete', rid]
+            # まず passkey delete を優先
+            cmd_pk = [bin_path, 'passkey', 'delete', rid]
             try:
-                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
-                if cp.returncode == 0:
-                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                cp_pk = subprocess.run(cmd_pk, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                if cp_pk.returncode == 0:
+                    write_msg({"ok": True, "stdout": (cp_pk.stdout or '').strip(), "cmd": cmd_pk})
                 else:
-                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd delete failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+                    # フォールバック: 通常の delete
+                    try:
+                        cmd = [bin_path, 'delete', rid]
+                        cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                        if cp.returncode == 0:
+                            write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                        else:
+                            write_msg({"ok": False, "error": (((cp_pk.stderr or '').strip()) or ((cp_pk.stdout or '').strip()) or ((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd delete failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+                    except subprocess.TimeoutExpired:
+                        write_msg({"ok": False, "error": "tsupasswd delete timeout", "cmd": ['delete', rid]})
             except subprocess.TimeoutExpired:
-                write_msg({"ok": False, "error": "tsupasswd delete timeout", "cmd": cmd})
+                write_msg({"ok": False, "error": "tsupasswd passkey delete timeout", "cmd": cmd_pk})
             continue
             # 位置引数: URL ユーザID パスワード（空なら空文字）/ オプション: --title タイトル, --note 備考
             def build_args():
@@ -206,12 +216,48 @@ while True:
             except subprocess.TimeoutExpired:
                 write_msg({"ok": False, "error": "tsupasswd add timeout", "cmd": cmd})
         elif a0 == 'passkey':
-            # パスキー操作: tsupasswd passkey add <rp_id> <credential_id> <user_handle> <public_key> [--sign-count N] [--transports CSV]
+            # パスキー操作: tsupasswd passkey add/search ...
             cmd = [bin_path] + args
             try:
                 cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                out = (cp.stdout or '').strip()
                 if cp.returncode == 0:
-                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                    # search --json の場合はタイトルを補完して返す
+                    try:
+                        is_search = (len(args) >= 2 and str(args[1]).lower() == 'search') and ('--json' in args)
+                    except Exception:
+                        is_search = False
+                    if is_search:
+                        try:
+                            data = json.loads(out or '[]')
+                            if isinstance(data, dict) and 'entries' in data and isinstance(data['entries'], list):
+                                arr = data['entries']
+                                for e in arr:
+                                    try:
+                                        title = e.get('title') or e.get('name') or ''
+                                        if not title:
+                                            rp = e.get('rp_id') or e.get('rpId') or e.get('rp') or ''
+                                            e['title'] = str(rp)
+                                    except Exception:
+                                        pass
+                                new_out = json.dumps(arr, ensure_ascii=False)
+                            else:
+                                arr = data if isinstance(data, list) else [data]
+                                for e in arr:
+                                    if isinstance(e, dict):
+                                        try:
+                                            title = e.get('title') or e.get('name') or ''
+                                            if not title:
+                                                rp = e.get('rp_id') or e.get('rpId') or e.get('rp') or ''
+                                                e['title'] = str(rp)
+                                        except Exception:
+                                            pass
+                                new_out = json.dumps(arr, ensure_ascii=False)
+                            write_msg({"ok": True, "stdout": new_out, "cmd": cmd})
+                        except Exception:
+                            write_msg({"ok": True, "stdout": out, "cmd": cmd})
+                    else:
+                        write_msg({"ok": True, "stdout": out, "cmd": cmd})
                 else:
                     write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd passkey failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
             except subprocess.TimeoutExpired:

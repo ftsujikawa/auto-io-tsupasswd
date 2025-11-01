@@ -9,6 +9,141 @@
   const esc = (s) => {
     try { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } catch(_) { return ''; }
   };
+
+  // ユーザID候補の入力を優先度付きで探索
+  const findUserInputCandidate = function(scope) {
+    try {
+      const doc = scope && scope.ownerDocument ? scope.ownerDocument : (scope.querySelectorAll ? scope : document);
+      const qAll = (sel) => { try { return Array.prototype.slice.call((scope.querySelectorAll ? scope : doc).querySelectorAll(sel)); } catch(_) { return []; } };
+      // 優先度: autocomplete=username > type=email > name/id に user/mail を含む > その他テキスト
+      const buckets = [
+        'input[autocomplete="username"]',
+        'input[type="email"]',
+        'input[name*="user" i]',
+        'input[name*="mail" i]',
+        'input[id*="user" i]',
+        'input[id*="mail" i]',
+        'input[type="text"]'
+      ];
+      for (const sel of buckets) {
+        const list = qAll(sel).filter((el) => { try { return isProbablyVisible(el) && isEditableInput(el); } catch(_) { return false; } });
+        if (list.length) return list[0];
+      }
+    } catch(_) {}
+    return null;
+  };
+
+  // 送信前に拡張の生存確認（PING）が通ったら本送信
+  const sendWithPreflight = function(payload, cb) {
+    try {
+      safeSendMessage({ type: 'PING' }, (pong) => {
+        if (!(pong && pong.ok)) {
+          try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
+          return cb && cb({ ok: false, error: 'ping_failed' });
+        }
+        safeSendMessage(payload, cb);
+      });
+    } catch (_) {
+      try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
+      return cb && cb({ ok: false, error: 'ping_failed' });
+    }
+  };
+
+  try { window.tsupasswd = window.tsupasswd || {}; if (window.tsupasswd.disableAutoPasskeyPopup == null) window.tsupasswd.disableAutoPasskeyPopup = false; } catch(_) {}
+  try {
+    window.tsupasswd.waitPasskey = function(timeoutMs) {
+      return new Promise(function(resolve, reject) {
+        var timer = null;
+        var cleanup = function() {
+          try { window.removeEventListener('tsu:passkeyCaptured', on); } catch(_) {}
+          if (timer) { try { clearTimeout(timer); } catch(_) {} timer = null; }
+        };
+        var on = function(e) { cleanup(); resolve(e && e.detail); };
+        try { window.addEventListener('tsu:passkeyCaptured', on, { once: true }); } catch(_) { try { window.addEventListener('tsu:passkeyCaptured', on); } catch(_) {} }
+        if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+          try { timer = setTimeout(function(){ cleanup(); reject(new Error('timeout')); }, timeoutMs); } catch(_) {}
+        }
+      });
+    };
+  } catch(_) {}
+
+  // ページコンテキストへ WebAuthn フックを注入（isolated world を回避）
+  (function injectPageHookOnce(){
+    try {
+      if (window.__tsu_page_injected) return;
+      const s = document.createElement('script');
+      s.type = 'text/javascript';
+      let url = '';
+      try { url = chrome.runtime.getURL('injected/tsu-webauthn-hook.js'); } catch(_) {}
+      if (url) s.src = url;
+      s.onload = function(){
+        try { window.__tsu_page_injected = true; } catch(_) {}
+        try { s.remove(); } catch(_) {}
+      };
+      s.onerror = function(){
+        try { window.__tsu_page_injected_error = true; } catch(_) {}
+        try { s.remove(); } catch(_) {}
+      };
+      (document.head || document.documentElement).appendChild(s);
+    } catch(_) {}
+  })();
+
+  // ページ→コンテンツへのメッセージブリッジ
+  (function setupBridge(){
+    try {
+      window.addEventListener('message', (ev) => {
+        try {
+          if (!ev || ev.source !== window) return;
+          const data = ev.data || {};
+          if (!data || !data.__tsu) return;
+          // ページ側からの設定反映
+          if (data.type === 'tsu:setConfig' && data.config && typeof data.config === 'object') {
+            try {
+              window.tsupasswd = window.tsupasswd || {};
+              Object.assign(window.tsupasswd, data.config);
+              try { showToast('設定を反映しました'); } catch(_) {}
+            } catch(_) {}
+            return;
+          }
+          if (data.type === 'tsu:set' && data.key) {
+            try {
+              window.tsupasswd = window.tsupasswd || {};
+              window.tsupasswd[String(data.key)] = data.value;
+              try { showToast('設定を反映しました'); } catch(_) {}
+            } catch(_) {}
+            return;
+          }
+          if (data.type !== 'tsu:passkeyCaptured') return;
+          window.__tsu_pk_cache = Object.assign(window.__tsu_pk_cache || {}, data.cache || {});
+          // コンテンツ側でもイベント発火
+          try {
+            const detail = extractPasskeyFromPage(document);
+            window.dispatchEvent(new CustomEvent('tsu:passkeyCaptured', { detail }));
+            if (isAutoPopupEnabled()) {
+              try {
+                const now = Date.now();
+                if (!window.__tsu_pk_last_popup || (now - window.__tsu_pk_last_popup) > 1500) {
+                  window.__tsu_pk_last_popup = now;
+                  const anchor = (window.__tsu_current_anchor)
+                    || document.querySelector('input[type="password"]')
+                    || document.querySelector('input')
+                    || null;
+                  openPasskeyDialog(anchor, detail);
+                }
+              } catch(_) {}
+            }
+          } catch(_) {}
+        } catch(_) {}
+      }, false);
+    } catch(_) {}
+  })();
+  // ブリッジ疎通テスト用ヘルパー（ページフックを模倣）
+  try {
+    window.tsupasswd = window.tsupasswd || {};
+    window.tsupasswd.testHook = function(cache){
+      try { window.postMessage({ __tsu: true, type: 'tsu:passkeyCaptured', cache: cache || {} }, '*'); return true; } catch(_) { return false; }
+    };
+  } catch(_) {}
   // 明確にメール/ユーザIDと判断できる入力か（誤検出を避けつつ広めに）
   const isClearlyEmailLike = function(el) {
     try {
@@ -38,7 +173,7 @@
   // ページからパスキー情報を推測抽出
   const extractPasskeyFromPage = function(rootDoc) {
     const doc = rootDoc || document;
-    const out = { rp: '', cred: '', user: '', pub: '', count: '', transports: '' };
+    const out = { rp: '', cred: '', user: '', pub: '', count: '', transports: '', title: '' };
     // WebAuthnフックのキャッシュを優先
     try {
       const c = (window && window.__tsu_pk_cache) || {};
@@ -47,8 +182,11 @@
       if (c.userHandleB64) out.user = c.userHandleB64;
       if (c.publicKeyB64) out.pub = c.publicKeyB64; // まだ未設定の可能性あり
       if (typeof c.signCount === 'number') out.count = String(c.signCount);
+      if (c.transports) out.transports = String(c.transports);
+      if (c.title) out.title = String(c.title);
     } catch(_) {}
     try { if (!out.rp) out.rp = (location && location.hostname) ? String(location.hostname) : ''; } catch(_) {}
+    try { if (!out.title) out.title = (document && document.title) ? String(document.title) : ''; } catch(_) {}
     try {
       const nodes = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, [data-credential-id], [data-user-handle], [data-public-key]'));
       for (const n of nodes) {
@@ -185,11 +323,24 @@
           if (pub) {
             try {
               if (pub.rp && pub.rp.id) window.__tsu_pk_cache.rpId = String(pub.rp.id);
+              try { if (pub.rp && pub.rp.name) window.__tsu_pk_cache.title = String(pub.rp.name); } catch(_) {}
               if (pub.user && pub.user.id) {
                 const u = pub.user.id; // ArrayBufferSource
                 const buf = (u instanceof ArrayBuffer) ? u : (ArrayBuffer.isView(u) ? u.buffer : null);
                 if (buf) window.__tsu_pk_cache.userHandleB64 = b64u(buf);
               }
+              // transports 補完（excludeCredentialsに含まれる可能性）
+              try {
+                const ex = Array.isArray(pub.excludeCredentials) ? pub.excludeCredentials : [];
+                const trSet = new Set();
+                for (const e of ex) {
+                  try {
+                    const trs = (e && e.transports) || [];
+                    if (Array.isArray(trs)) trs.forEach(t => trSet.add(String(t)));
+                  } catch(_) {}
+                }
+                if (trSet.size) window.__tsu_pk_cache.transports = Array.from(trSet).join(',');
+              } catch(_) {}
             } catch(_) {}
           }
         } catch(_) {}
@@ -209,6 +360,24 @@
                 }
               }
             } catch(_) {}
+            // 取得通知イベント + 自動ポップアップ
+            try {
+              const detail = extractPasskeyFromPage((cred && cred.id && document) ? document : document);
+              window.dispatchEvent(new CustomEvent('tsu:passkeyCaptured', { detail }));
+              if (isAutoPopupEnabled()) {
+                try {
+                  const now = Date.now();
+                  if (!window.__tsu_pk_last_popup || (now - window.__tsu_pk_last_popup) > 1500) {
+                    window.__tsu_pk_last_popup = now;
+                    const anchor = (window.__tsu_current_anchor)
+                      || document.querySelector('input[type="password"]')
+                      || document.querySelector('input')
+                      || null;
+                    openPasskeyDialog(anchor, detail);
+                  }
+                } catch(_) {}
+              }
+            } catch(_) {}
           }
         } catch(_) {}
         return cred;
@@ -217,7 +386,22 @@
         try {
           const pub = options && options.publicKey;
           if (pub) {
-            try { if (pub.rpId) window.__tsu_pk_cache.rpId = String(pub.rpId); } catch(_) {}
+            try {
+              if (pub.rpId) window.__tsu_pk_cache.rpId = String(pub.rpId);
+              if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title);
+              // transports 補完（allowCredentialsに含まれる可能性）
+              try {
+                const allow = Array.isArray(pub.allowCredentials) ? pub.allowCredentials : [];
+                const trSet = new Set((window.__tsu_pk_cache.transports ? String(window.__tsu_pk_cache.transports).split(',') : []).filter(Boolean));
+                for (const a of allow) {
+                  try {
+                    const trs = (a && a.transports) || [];
+                    if (Array.isArray(trs)) trs.forEach(t => trSet.add(String(t)));
+                  } catch(_) {}
+                }
+                if (trSet.size) window.__tsu_pk_cache.transports = Array.from(trSet).join(',');
+              } catch(_) {}
+            } catch(_) {}
           }
         } catch(_) {}
         const cred = await origGet(options);
@@ -226,6 +410,24 @@
             try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
             const resp = cred.response;
             try { if (resp && resp.userHandle) window.__tsu_pk_cache.userHandleB64 = b64u(resp.userHandle); } catch(_) {}
+            // 取得通知イベント + 自動ポップアップ
+            try {
+              const detail = extractPasskeyFromPage(document);
+              window.dispatchEvent(new CustomEvent('tsu:passkeyCaptured', { detail }));
+              if (isAutoPopupEnabled()) {
+                try {
+                  const now = Date.now();
+                  if (!window.__tsu_pk_last_popup || (now - window.__tsu_pk_last_popup) > 1500) {
+                    window.__tsu_pk_last_popup = now;
+                    const anchor = (window.__tsu_current_anchor)
+                      || document.querySelector('input[type="password"]')
+                      || document.querySelector('input')
+                      || null;
+                    openPasskeyDialog(anchor, detail);
+                  }
+                } catch(_) {}
+              }
+            } catch(_) {}
           }
         } catch(_) {}
         return cred;
@@ -487,6 +689,79 @@
     try { setTimeout(applyBoth, 260); } catch(_){ }
   };
 
+  // タイトル用にページの入力値（ユーザID想定）を優先取得（値が無ければプレースホルダ/ラベル/属性名を利用）
+  const getUserValueForTitle = function(anchor, rootDoc) {
+    try {
+      const doc = rootDoc || document;
+      const pickTextLike = (s) => { try { return (s == null) ? '' : String(s).trim(); } catch(_) { return ''; } };
+      const normalizeUser = (v) => {
+        try {
+          const s = pickTextLike(v);
+          if (!s) return '';
+          // そのまま使用（メールも全体を保持）
+          return s;
+        } catch(_) { return ''; }
+      };
+      const pickVal = (el) => {
+        try {
+          if (!el) return '';
+          // 1) 値
+          const v = (typeof el.value === 'string') ? el.value.trim() : '';
+          if (v) return normalizeUser(v);
+          // 2) placeholder
+          const ph = pickTextLike(el.getAttribute && el.getAttribute('placeholder'));
+          if (ph) return normalizeUser(ph);
+          // 3) 関連ラベル
+          try {
+            const id = el.id && String(el.id);
+            if (id) {
+              const lab = doc.querySelector && doc.querySelector(`label[for="${CSS.escape(id)}"]`);
+              const txt = pickTextLike(lab && lab.textContent);
+              if (txt) return normalizeUser(txt);
+            }
+          } catch(_) {}
+          // 4) name/id 属性
+          const hint = pickTextLike((el.name || '')) || pickTextLike((el.id || ''));
+          if (hint) return normalizeUser(hint);
+          return '';
+        } catch(_) { return ''; }
+      };
+      // 1) まずアクティブ要素がテキスト入力ならその値
+      try {
+        const ae = doc.activeElement;
+        if (ae && isTextboxLike(ae)) { const v = pickVal(ae); if (v) return v; }
+      } catch(_) {}
+      // 2) 同一フォーム内のユーザ欄の値（優先度付き）
+      try {
+        const a = anchor;
+        const form = a && (a.form || (a.closest && a.closest('form')));
+        if (form) {
+          const uEl = findUserInputCandidate(form) || null;
+          const v = pickVal(uEl);
+          if (v) return v;
+        }
+      } catch(_) {}
+      // 3) ドキュメント全体から可視なユーザ欄の値（優先度付き）
+      try {
+        const uEl2 = findUserInputCandidate(doc);
+        const v2 = pickVal(uEl2);
+        if (v2) return v2;
+      } catch(_) {}
+      return '';
+    } catch(_) { return ''; }
+  };
+
+  // ホストとユーザ文字列からタイトルを合成
+  const composeTitle = function(baseTitle, userLike) {
+    try {
+      const host = (location && location.hostname) ? String(location.hostname) : '';
+      const u = (userLike && String(userLike).trim()) || '';
+      if (host && u) return `${host} / ${u}`;
+      if (u) return u;
+      return baseTitle || host || '';
+    } catch(_) { return baseTitle || ''; }
+  };
+
   // 簡易ポップアップ（検索結果のユーザID/パスワードと保存ボタンのみ）
   const ensureFixedPopup = function(anchor) {
     const doc = (anchor && anchor.ownerDocument) || document;
@@ -511,7 +786,7 @@
       (doc.body || doc.documentElement).appendChild(box);
       try {
         box.addEventListener('mouseenter', () => { window.__tsu_hovering_popup = true; }, true);
-        box.addEventListener('mouseleave', () => { window.__tsu_hovering_popup = false; }, true);
+        box.addEventListener('mouseleave', () => { window.__tsu_hovering_popup = false; try { scheduleAutoHide(1500); } catch(_) {} }, true);
         // できるだけ早い段階で抑止フラグを立て、グローバルキャプチャのclick/focusinを無視させる
         const setSuppress = () => { try { window.__tsu_suppress_until = Date.now() + 1500; } catch(_) {} };
         box.addEventListener('pointerdown', (e) => { setSuppress(); try { e.stopPropagation(); } catch(_) {} }, true);
@@ -530,6 +805,88 @@
       } catch(_) {}
     }
     return box;
+  };
+
+  const isAutoPopupEnabled = function() {
+    try {
+      const cfg = (window && window.tsupasswd) || null;
+      if (cfg && cfg.disableAutoPasskeyPopup) return false;
+      if (cfg && cfg.autoPasskeyPopup === false) return false;
+    } catch(_) {}
+    return true;
+  };
+
+  const showToast = function(text) {
+    try {
+      let doc = document;
+      try {
+        const topDoc = (window.top && window.top.document) ? window.top.document : null;
+        // 同一オリジンであればトップドキュメントに挿入
+        if (topDoc && topDoc.location && document.location && topDoc.location.origin === document.location.origin) {
+          doc = topDoc;
+        }
+      } catch(_) {}
+      let t = doc.getElementById('tsu-toast');
+      if (!t) {
+        t = doc.createElement('div');
+        t.id = 'tsu-toast';
+        t.style.position = 'fixed';
+        t.style.right = '16px';
+        t.style.bottom = '16px';
+        t.style.zIndex = '2147483647';
+        t.style.background = 'rgba(32,33,36,0.98)';
+        t.style.color = '#e8eaed';
+        t.style.border = '1px solid rgba(0,0,0,0.2)';
+        t.style.borderRadius = '8px';
+        t.style.padding = '10px 12px';
+        t.style.boxShadow = '0 6px 18px rgba(0,0,0,0.3)';
+        t.style.fontSize = '13px';
+        t.style.display = 'none';
+        (doc.body || doc.documentElement).appendChild(t);
+      }
+      t.textContent = String(text || '');
+      t.style.display = 'block';
+      try { if (t.__timer) { clearTimeout(t.__timer); } } catch(_) {}
+      try { t.__timer = setTimeout(function(){ try { t.style.display = 'none'; } catch(_) {} }, 1600); } catch(_) {}
+    } catch(_) {}
+  };
+  try { window.tsupasswd = window.tsupasswd || {}; window.tsupasswd.toast = showToast; } catch(_) {}
+
+  // chrome.runtime.sendMessage の安全ラッパー
+  const safeSendMessage = function(payload, cb, _attempt) {
+    try {
+      const attempt = (typeof _attempt === 'number') ? _attempt : 0;
+      if (!(chrome && chrome.runtime && chrome.runtime.sendMessage)) throw new Error('runtime_unavailable');
+      try {
+        chrome.runtime.sendMessage(payload, (resp) => {
+          try {
+            const err = chrome.runtime && chrome.runtime.lastError;
+            if (err) {
+              const msg = String(err.message || err);
+              // 一時的な無効化は短時間で再試行
+              if (/Extension context invalidated/i.test(msg) && attempt < 5) {
+                const delay = Math.min(3200, 200 * Math.pow(2, attempt));
+                return setTimeout(() => safeSendMessage(payload, cb, attempt + 1), delay);
+              }
+              try { showToast('拡張が無効になっています。ページを再読み込みしてください'); } catch(_) {}
+              return cb && cb({ ok: false, error: msg });
+            }
+          } catch(_) {}
+          cb && cb(resp);
+        });
+      } catch (e) {
+        const msg = String(e && e.message || e || '');
+        if (/Extension context invalidated/i.test(msg) && attempt < 5) {
+          const delay = Math.min(3200, 200 * Math.pow(2, attempt));
+          return setTimeout(() => safeSendMessage(payload, cb, attempt + 1), delay);
+        }
+        try { showToast('拡張がリロードされました。ページを再読み込みしてください'); } catch(_) {}
+        return cb && cb({ ok: false, error: msg });
+      }
+    } catch (e2) {
+      try { showToast('拡張に接続できません。ページを再読み込みしてください'); } catch(_) {}
+      return cb && cb({ ok: false, error: String(e2 && e2.message || e2) });
+    }
   };
 
   const placePopup = function(anchor, box) {
@@ -603,11 +960,57 @@
     box.style.display = 'block';
     try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
     const q = (sel) => box.querySelector(sel);
-    q('#tsu-save-title').value = title;
-    q('#tsu-save-url').value = urlStr;
-    q('#tsu-save-user').value = curUser || '';
-    q('#tsu-save-pass').value = curPass || '';
+    const fromInput = getUserValueForTitle(anchor, document);
+    const userHint = (fromInput && fromInput.trim()) ? fromInput.trim() : ((curUser && String(curUser).trim()) ? String(curUser).trim() : '');
+    const defaultTitle = userHint || title;
+    const titleInput = q('#tsu-save-title');
+    const userInput = q('#tsu-save-user');
+    const passInput = q('#tsu-save-pass');
+    const urlInput  = q('#tsu-save-url');
+    if (titleInput) titleInput.value = defaultTitle;
+    if (urlInput) urlInput.value = urlStr;
+    if (userInput) userInput.value = curUser || '';
+    if (passInput) passInput.value = curPass || '';
+    // タイトル手動編集検知と自動追従
+    let titleEdited = false;
+    if (titleInput) {
+      titleInput.addEventListener('input', () => { titleEdited = true; }, { once: true });
+    }
+    if (userInput && titleInput) {
+      const onUserChange = () => {
+        try {
+          if (!titleEdited) {
+            const v = (userInput.value || '').trim();
+            titleInput.value = v || (document && document.title);
+          }
+        } catch(_) {}
+      };
+      userInput.addEventListener('input', onUserChange, false);
+      userInput.addEventListener('change', onUserChange, false);
+    }
     const onCancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}; try { dialogOpen = false; box.style.display = 'none'; } catch(_) {}; };
+    // 事前PINGで拡張の接続性を確認し、失敗時は保存ボタンを無効化
+    try {
+      const btn = q('#tsu-save-ok');
+      const err = q('#tsu-save-err');
+      if (btn) {
+        btn.disabled = true;
+        sendWithPreflight({ type: 'PING' }, (pong) => {
+          try {
+            if (!(pong && pong.ok)) {
+              if (err) {
+                err.style.display = 'block';
+                err.innerHTML = '拡張に接続できません。<button id="tsu-reload-page2" style="margin-left:8px;padding:2px 6px;">ページを再読み込み</button>';
+                const b = err.querySelector('#tsu-reload-page2');
+                if (b) b.addEventListener('click', () => { try { location.reload(); } catch(_) {} }, { once: true });
+              }
+            } else {
+              btn.disabled = false;
+            }
+          } catch(_) {}
+        });
+      }
+    } catch(_) {}
     const onSave = (ev) => {
       try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
       const t = (q('#tsu-save-title').value || '').trim();
@@ -624,14 +1027,30 @@
       const args = ['add', u, id, pw];
       if (t) { args.push('--title', t); }
       if (note) { args.push('--note', note); }
-      chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
+      sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
         try {
           if (!(resp && resp.ok)) {
-            if (err) { err.style.display = 'block'; err.textContent = '保存に失敗しました'; }
+            if (err) {
+              err.style.display = 'block';
+              try {
+                const detail = (resp && (resp.error || (resp.data && (resp.data.stderr || resp.data.stdout)) || '')) || '';
+                const needsReload = /Extension context invalidated/i.test(String(detail));
+                if (needsReload) {
+                  err.innerHTML = '保存に失敗しました: Extension context invalidated. <button id="tsu-reload-page" style="margin-left:8px;padding:2px 6px;">ページを再読み込み</button>';
+                  try {
+                    const b = err.querySelector('#tsu-reload-page');
+                    if (b) b.addEventListener('click', () => { try { location.reload(); } catch(_) {} }, { once: true });
+                  } catch(_) {}
+                } else {
+                  err.textContent = '保存に失敗しました' + (detail ? (': ' + String(detail)) : '');
+                }
+              } catch(_) { err.textContent = '保存に失敗しました'; }
+            }
             return;
           }
           // 成功
           try { box.innerHTML = '<div style="padding:8px 4px;">保存しました</div>'; } catch(_) {}
+          try { showToast('保存しました'); } catch(_) {}
           setTimeout(() => { try { dialogOpen = false; box.style.display = 'none'; } catch(_) {} }, 600);
         } catch(_) {}
       });
@@ -653,6 +1072,7 @@
     const html = '<div style="display:flex;flex-direction:column;gap:8px;width:100%;">'
       + '<div style="font-weight:600;">パスキーを保存</div>'
       + '<div style="display:flex;flex-direction:column;gap:6px;">'
+        + '<label style="font-size:12px;">タイトル<input id="tsu-pk-title" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc(((prefill && prefill.title) ? prefill.title : ((document && document.title) ? document.title : ''))) + '"></label>'
         + '<label style="font-size:12px;">RP ID<input id="tsu-pk-rp" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc(rpIdInit) + '"></label>'
         + '<label style="font-size:12px;">Credential ID<input id="tsu-pk-cred" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.cred) ? prefill.cred : '') + '"></label>'
         + '<label style="font-size:12px;">User Handle<input id="tsu-pk-user" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.user) ? prefill.user : '') + '"></label>'
@@ -678,8 +1098,58 @@
     const pubEl = q('#tsu-pk-pub');
     const cntEl = q('#tsu-pk-count');
     const trEl = q('#tsu-pk-trans');
+    const titleEl = q('#tsu-pk-title');
+    try {
+      const fromInput2 = getUserValueForTitle(anchor, document);
+      const userHint2 = (fromInput2 && String(fromInput2).trim()) || '';
+      if (titleEl) { titleEl.value = userHint2 || (titleEl.value || ((document && document.title) ? document.title : '')); }
+    } catch(_) {}
+    // タイトル手動編集検知と自動追従（パスキー保存）
+    let titleEdited2 = false;
+    if (titleEl) { titleEl.addEventListener('input', () => { titleEdited2 = true; }, { once: true }); }
+    if (userEl && titleEl) {
+      const onUserChange2 = () => {
+        try {
+          if (!titleEdited2) {
+            const v = (userEl.value || '').trim();
+            titleEl.value = v || ((document && document.title) ? document.title : '');
+          }
+        } catch(_) {}
+      };
+      userEl.addEventListener('input', onUserChange2, false);
+      userEl.addEventListener('change', onUserChange2, false);
+    }
     const btnCancel = q('#tsu-pk-cancel');
     const btnOk = q('#tsu-pk-ok');
+    // 事前PING（失敗時にインラインエラーを表示、OKを無効化）
+    try {
+      if (btnOk) {
+        btnOk.disabled = true;
+        // エラー表示用の要素をボタン行の直前に用意
+        let inlineErr = box.querySelector('#tsu-pk-err');
+        if (!inlineErr) {
+          inlineErr = document.createElement('div');
+          inlineErr.id = 'tsu-pk-err';
+          inlineErr.style.display = 'none';
+          inlineErr.style.color = '#f28b82';
+          inlineErr.style.fontSize = '12px';
+          try { btnOk.parentElement.parentElement.insertBefore(inlineErr, btnOk.parentElement); } catch(_) { box.insertBefore(inlineErr, box.firstChild); }
+        }
+        sendWithPreflight({ type: 'PING' }, (pong) => {
+          try {
+            if (!(pong && pong.ok)) {
+              inlineErr.style.display = 'block';
+              inlineErr.innerHTML = '拡張に接続できません。<button id="tsu-reload-page3" style="margin-left:8px;padding:2px 6px;">ページを再読み込み</button>';
+              const b = inlineErr.querySelector('#tsu-reload-page3');
+              if (b) b.addEventListener('click', () => { try { location.reload(); } catch(_) {} }, { once: true });
+            } else {
+              btnOk.disabled = false;
+              inlineErr.style.display = 'none';
+            }
+          } catch(_) {}
+        });
+      }
+    } catch(_) {}
 
     const onCancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} dialogOpen = false; hidePopup(true); };
     const onSave = (ev) => {
@@ -690,6 +1160,7 @@
       const pub = (pubEl && pubEl.value || '').trim();
       const cntRaw = (cntEl && cntEl.value || '').trim();
       const trans = (trEl && trEl.value || '').trim();
+      const title = (titleEl && titleEl.value || '').trim();
       if (!rp || !cred || !usr || !pub) {
         try { alert('必須: RP ID, Credential ID, User Handle, Public Key'); } catch(_) {}
         return;
@@ -698,9 +1169,14 @@
       const args = ['passkey', 'add', rp, cred, usr, pub];
       if (cntRaw !== '') { args.push('--sign-count', String(parseInt(cntRaw, 10) || 0)); }
       if (trans !== '') { args.push('--transports', trans); }
-      chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
+      if (title !== '') {
+        const titleFlag = (window.tsupasswd && window.tsupasswd.passkeyTitleFlag) || '--title';
+        args.push(titleFlag, title);
+      }
+      sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
         try {
           if (resp && resp.ok) {
+            try { showToast('保存しました'); } catch(_) {}
             dialogOpen = false; hidePopup(true);
           } else {
             try { alert('保存に失敗しました: ' + (resp && (resp.error || resp.stderr || resp.stdout) || 'unknown')); } catch(_) {}
@@ -745,7 +1221,7 @@
     const trySearch = (queries, cb) => {
       if (!queries.length) { cb({ ok: false, data: null }); return; }
       const q = queries.shift();
-      chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host, args: buildArgs(q) }, (resp) => {
+      sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: buildArgs(q) }, (resp) => {
         try {
           let raw = resp && resp.data;
           const parseStr = (s) => { try { return JSON.parse(s); } catch(_) { return null; } };
@@ -765,10 +1241,13 @@
       const u = new URL(urlStr);
       const origin = u.origin;
       const hostOnly = u.host;
-      queries = [urlStr, origin, hostOnly].filter(Boolean);
+      const title = (document && document.title) ? String(document.title) : '';
+      queries = [urlStr, origin, hostOnly, title].filter(Boolean);
     } catch(_) {
-      queries = [urlStr].filter(Boolean);
+      const title = (document && document.title) ? String(document.title) : '';
+      queries = [urlStr, title].filter(Boolean);
     }
+    try { queries = Array.from(new Set(queries)); } catch(_) {}
     trySearch(queries, (resp) => {
       try {
         const masked = (n) => { try { return n ? '\u2022'.repeat(String(n).length) : '\u2022\u2022\u2022\u2022'; } catch(_) { return '********'; } };
@@ -822,7 +1301,8 @@
           const p = normalize((item && item.password) != null ? item.password : (pick(item, passKeys) || findInObj(item, passKeys)));
           const title = normalize(pick(item, ['title','name'])) || '';
           const url = normalize(pick(item, ['url','link','href'])) || '';
-          return { username: u, password: p, title, url };
+          const id = normalize(pick(item, ['id'])) || '';
+          return { id, username: u, password: p, title, url };
         };
         let entriesAll = [];
         if (ok && Array.isArray(data) && data.length) {
@@ -890,6 +1370,9 @@
                   + '<div>ユーザID: <span>' + esc(u || '未検出') + '</span></div>'
                   + '<div>パスワード: <span>' + (p ? masked(p) : '未検出') + '</span></div>'
                 + '</div>'
+                + '<div style="margin-top:6px;display:flex;gap:6px;justify-content:flex-end;">'
+                  + '<button class="tsu-del" data-idx="' + i + '" style="background:#d93025;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">削除</button>'
+                + '</div>'
               + '</div>';
           }
         } else {
@@ -945,8 +1428,36 @@
             node.addEventListener('click', onClickFillClose, true);
           });
         } catch(_) {}
+        try {
+          const delButtons = box.querySelectorAll('.tsu-del');
+          delButtons.forEach((btn) => {
+            const idx = parseInt(btn.getAttribute('data-idx') || '-1', 10);
+            const cred = (idx >= 0 && idx < entriesAll.length) ? entriesAll[idx] : null;
+            const onDel = (ev) => {
+              try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
+              try {
+                const rid = cred && cred.id ? String(cred.id) : '';
+                if (!rid) { try { alert('削除に失敗しました'); } catch(_) {} return; }
+                const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+                chrome.runtime.sendMessage({ type: 'DELETE_TSUPASSWD', host, entry: { id: rid } }, (resp) => {
+                  try {
+                    if (resp && resp.ok) {
+                      const itemNode = btn.closest('.tsu-entry');
+                      if (itemNode && itemNode.parentNode) itemNode.parentNode.removeChild(itemNode);
+                    } else {
+                      try { alert('削除に失敗しました'); } catch(_) {}
+                    }
+                  } catch(_) {}
+                });
+              } catch(_) {}
+            };
+            btn.addEventListener('click', onDel, true);
+            btn.addEventListener('pointerdown', onDel, true);
+          });
+        } catch(_) {}
         box.style.display = 'block';
         try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
+        try { scheduleAutoHide(6000); } catch(_) {}
 
         // 保存ボタン→保存フォームダイアログを開く
         const saveBtn = box.querySelector('#tsu-save-entry');
@@ -977,6 +1488,17 @@
     } catch(_) {}
   };
   const hidePopupDelayed = function() { try { if (dialogOpen) return; setTimeout(() => { if (!dialogOpen && !window.__tsu_hovering_popup) hidePopup(false); }, 120); } catch(_) {} };
+
+  // 一定時間操作が無い場合に自動で閉じる
+  const scheduleAutoHide = function(ms) {
+    try {
+      const dur = (typeof ms === 'number' && ms > 0) ? ms : 6000;
+      if (window.__tsu_auto_hide_timer) { try { clearTimeout(window.__tsu_auto_hide_timer); } catch(_) {} }
+      window.__tsu_auto_hide_timer = setTimeout(function(){
+        try { if (!dialogOpen && !window.__tsu_hovering_popup) hidePopup(false); } catch(_) {}
+      }, dur);
+    } catch(_) {}
+  };
 
   const filledSet = new WeakSet();
   let lastPairs = [];

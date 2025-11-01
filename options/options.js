@@ -287,6 +287,8 @@ restore();
       const data = JSON.parse(stdout || '[]');
       const arr = Array.isArray(data) ? data : (Array.isArray(data.entries) ? data.entries : [data]);
       return arr.map((e) => ({
+        id: esc(e.id || e.entry_id || e.record_id || ''),
+        title: esc(e.title || e.name || ''),
         rp_id: esc(e.rp_id || e.rpId || e.rp || ''),
         credential_id: esc(e.credential_id || e.credentialId || e.id || ''),
         user_handle: esc(e.user_handle || e.userHandle || ''),
@@ -302,6 +304,7 @@ restore();
     list.forEach((e, idx) => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
+        <td>${esc(e.title)}</td>
         <td>${esc(e.rp_id)}</td>
         <td><code title="${esc(e.credential_id)}">${b64short(e.credential_id)}</code></td>
         <td><code title="${esc(e.user_handle)}">${b64short(e.user_handle)}</code></td>
@@ -312,12 +315,15 @@ restore();
             <button class="pk-copy" data-k="credential_id">IDコピー</button>
             <button class="pk-copy" data-k="user_handle">UHコピー</button>
             <button class="pk-copy" data-k="public_key">PKコピー</button>
+            <button class="pk-delete" style="background:#7f1d1d;border-color:#7f1d1d;">削除</button>
           </div>
         </td>
       `;
       tr.dataset.idx = String(idx);
       // public_key は列に出さないが保持
       tr.__public_key = e.public_key;
+      tr.__credential_id = e.credential_id;
+      tr.__pk_id = e.id; // 削除に使用する本来のID
       tbody.appendChild(tr);
     });
     // クリップボードコピー
@@ -327,10 +333,70 @@ restore();
           const tr = b.closest('tr'); if (!tr) return;
           const key = b.getAttribute('data-k') || '';
           let val = '';
-          if (key === 'credential_id') val = tr.querySelector('td:nth-child(2) code')?.getAttribute('title') || '';
-          else if (key === 'user_handle') val = tr.querySelector('td:nth-child(3) code')?.getAttribute('title') || '';
+          if (key === 'credential_id') val = tr.querySelector('td:nth-child(3) code')?.getAttribute('title') || '';
+          else if (key === 'user_handle') val = tr.querySelector('td:nth-child(4) code')?.getAttribute('title') || '';
           else if (key === 'public_key') val = tr.__public_key || '';
           if (val) navigator.clipboard.writeText(val);
+        } catch(_) {}
+      });
+    });
+    // 削除
+    tbody.querySelectorAll('.pk-delete').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        try {
+          const tr = btn.closest('tr'); if (!tr) return;
+          const rid = tr.__pk_id || tr.__credential_id || tr.querySelector('td:nth-child(3) code')?.getAttribute('title') || '';
+          if (!rid) { status.textContent = '削除に失敗: ID不明'; return; }
+          status.textContent = '認証中…';
+          const hostPref = (window.tsupasswd && window.tsupasswd.host) || '';
+          // 先に認証を試みてロックを解除
+          chrome.runtime.sendMessage({ type: 'AUTH_TSUPASSWD', host: hostPref }, () => {
+            // 認証の成否に関わらず削除を試行（ウォッチドッグ付き）
+            status.textContent = '削除中…';
+            let done = false;
+            const watchdog = setTimeout(() => {
+              if (done) return;
+              status.textContent = '削除タイムアウト: 再試行中…';
+              // フォールバック: 直接 RUN_TSUPASSWD で passkey delete を試す
+              chrome.runtime.sendMessage({ type: 'RUN_TSUPASSWD', host: hostPref, args: ['passkey', 'delete', rid] }, (resp2) => {
+                try {
+                  if (chrome.runtime && chrome.runtime.lastError) {
+                    status.textContent = '削除に失敗しました ' + String(chrome.runtime.lastError.message || 'runtime error');
+                    return;
+                  }
+                  if (!resp2 || resp2.ok === false) {
+                    const err2 = (resp2 && (resp2.error || (resp2.data && (resp2.data.stderr || resp2.data.stdout)))) || 'unknown';
+                    status.textContent = '削除に失敗しました ' + String(err2);
+                    return;
+                  }
+                  try { tr.parentElement?.removeChild(tr); } catch(_) {}
+                  status.textContent = '削除しました 再読み込み中…';
+                  try { doSearch(); } catch(_) { setTimeout(() => { try { doSearch(); } catch(_) {} }, 300); }
+                  setTimeout(() => { if (status.textContent.startsWith('削除しました')) status.textContent = ''; }, 1500);
+                } catch(_) { status.textContent = '削除に失敗しました'; }
+              });
+            }, 12000);
+            chrome.runtime.sendMessage({ type: 'DELETE_TSUPASSWD', host: hostPref, entry: { id: rid } }, (resp) => {
+              try {
+                done = true;
+                clearTimeout(watchdog);
+                if (chrome.runtime && chrome.runtime.lastError) {
+                  status.textContent = '削除に失敗しました ' + String(chrome.runtime.lastError.message || 'runtime error');
+                  return;
+                }
+                if (!resp || resp.ok === false) {
+                  const err = (resp && (resp.error || (resp.data && (resp.data.stderr || resp.data.stdout)))) || 'unknown';
+                  status.textContent = '削除に失敗しました ' + String(err);
+                  return;
+                }
+                try { tr.parentElement?.removeChild(tr); } catch(_) {}
+                status.textContent = '削除しました 再読み込み中…';
+                // 最新状態で再検索してUIを同期
+                try { doSearch(); } catch(_) { setTimeout(() => { try { doSearch(); } catch(_) {} }, 300); }
+                setTimeout(() => { if (status.textContent.startsWith('削除しました')) status.textContent = ''; }, 1500);
+              } catch(_) { status.textContent = '削除に失敗しました'; }
+            });
+          });
         } catch(_) {}
       });
     });
