@@ -62,6 +62,95 @@
   - `secret`: `message.secret` が無ければ `chrome.storage.local.auth_secret` を使用。
   - `bin`（任意）: `message.bin` が無ければ `chrome.storage.local.tsupasswd_bin` を使用。
 
+## パスキー対応（WebAuthn/Passkey）
+
+- **レガシーポップアップ抑止**
+  - パスキー環境が有効な場合（`PublicKeyCredential` が利用可能、または内部フラグ・キャッシュが立っている場合）、ユーザID/パスワード/保存メニューのレガシーポップは表示しません。
+  - `focusin`/`click`/`keydown` を含む全ての起点で同期ガードを入れ、レガシーポップの生成を早期 return で抑止します。
+
+- **パスキー候補一覧の表示**
+  - 明示的なユーザ操作時に、rpId を用いたパスキー候補一覧を表示します。
+  - rpId の「部分一致（サブドメイン落としの suffix 走査）」も行い、`sub.example.com` で `example.com` のエントリも候補に含めます。
+  - 候補クリック時は、サイトのログインボタンをスコアリングして自動クリック（登録/サインアップ系は減点して誤起動を低減）。見つからない場合はカスタムイベントでフォールバックします。
+
+- **保存とタイトル一意化**
+  - パスキー保存は `RUN_TSUPASSWD: passkey add <rpId> <cred> <user> <pub> [--sign-count N] [--transports CSV] [--title T]` を実行します。
+  - 保存前に `passkey search <rpId> --json` で既存タイトルを取得し、重複時は `"タイトル (2)"`, `"タイトル (3)"` ... と連番を付与して一意化します。1000 を超える場合はタイムスタンプで一意化。
+  - 自動保存（autosave）のウォッチドッグ・フォールバック経路でも同じ一意化ロジックを適用します。
+
+- **自動保存（autosave）フロー**
+  - ページ側ブリッジから `tsu:passkeyCaptured` を受信すると、キャッシュ反映後に `savePasskeySilently` を自動実行します。
+  - まれな遅延に備え、ウォッチドッグがフォールバック保存を発動することがありますが、この経路でもタイトル一意化が行われます。
+  - 保存成功時は「保存しました」トーストを表示します。
+
+- **タイトル抽出の優先順**
+  - アクティブ/近傍の入力からメール/電話らしい値を抽出。`amazon.co.jp` では電話番号を優先、それ以外ではメールを優先。
+  - 取得できない場合はページタイトルなどにフォールバック。
+
+- **デバッグヘルパの公開**
+  - `window.tsupasswd.isPasskeyEnvOn()` / `window.tsupasswd.isPasskeyActiveNow()` / `window.tsupasswd.savePasskeySilently()` を公開。
+
+### 図版（フローとシーケンス）
+
+- **シーケンス図: パスキー自動保存と一意化**
+
+```mermaid
+sequenceDiagram
+  participant Page as Webページ
+  participant Content as content.js
+  participant Native as tsupasswd(ネイティブ)
+
+  Page->>Content: WebAuthn 実行
+  Content-->>Content: tsu:passkeyCaptured 受信 / キャッシュ更新
+  Content->>Content: savePasskeySilently(detail) スケジュール
+  Note over Content: watchdog でフォールバックも監視
+  Content->>Native: RUN_TSUPASSWD passkey search <rpId> --json
+  Native-->>Content: 既存タイトル一覧
+  Content-->>Content: uniqueTitle(base, exists) で一意化
+  Content->>Native: RUN_TSUPASSWD passkey add ... --title <unique>
+  Native-->>Content: ok / error
+  Content-->>Page: トースト表示（保存しました/失敗）
+```
+
+- **フローチャート: レガシーポップ抑止と候補表示**
+
+```mermaid
+flowchart TD
+  A[ユーザ操作: focus/click/keydown] --> B{パスキー環境?}
+  B -- はい --> C[レガシーポップ抑止\n(早期 return)]
+  C --> D[ユーザが明示操作した時だけ\nパスキー候補一覧を表示]
+  D --> E{候補クリック}
+  E -- はい --> F[ログインボタンをスコアリング\nして自動クリック]
+  F --> G{見つかった?}
+  G -- いいえ --> H[カスタムイベントでフォールバック]
+  B -- いいえ --> I[従来ポップ(必要時のみ)]
+```
+
+### スクリーンショット差し込みガイド
+
+- 画像配置先の例: `docs/images/`
+- おすすめの差し込み箇所:
+  - パスキー候補一覧の UI
+  - 「保存しました」トースト
+  - レガシーポップが抑止されている状態
+- Markdown 記法例:
+
+```md
+![Passkey Candidates](docs/images/passkey-candidates.png)
+![Saved Toast](docs/images/saved-toast.png)
+```
+
+### デバッグ手順（開発時）
+
+- コンソールで以下を実行して状態確認:
+  - `window.tsupasswd.isPasskeyEnvOn()`
+  - `window.tsupasswd.isPasskeyActiveNow()`
+  - `window.tsupasswd.savePasskeySilently()`
+- ログ確認:
+  - `console.info('[tsu] ...')` 系のログで、候補表示・検索・保存・一意化の各工程を追跡できます。
+- タイトル一意化の検証:
+  - 同一サイトで複数回保存し、`タイトル`, `タイトル (2)`, `タイトル (3)` ... になることを確認。
+
 ## ポップアップ UI の挙動（`popup/popup.js`）
 - **検索（取得）**
   - 入力欄のユーザIDをクエリに `window.tsupasswd.search(query)` を実行。
@@ -96,6 +185,20 @@
 - `content_scripts.matches` は現在 `<all_urls>` です。必要なURLパターンに絞ることを推奨します。
 
 ## 最近の改善点
+
+- **パスキー環境時のレガシーポップ全面抑止**
+  - パスキー有効（検出/アクティブ/キャッシュ）時は、レガシーのユーザID/パスワード/保存メニューを表示しません。
+  - `focusin`/`click`/`keydown` すべてで同期ガードとフェイルセーフ（MutationObserver）を追加。
+- **パスキー候補一覧とログイントリガ**
+  - rpId と部分一致（サブドメイン落とし）で候補を統合。
+  - 候補クリック時にログインボタンをスコアリングして自動クリック（登録ボタンは減点/除外）。
+- **パスキー保存時のタイトル一意化**
+  - `passkey search --json` により既存タイトルを収集し、重複時は ` (2)` 形式で連番を付与。
+  - autosave のフォールバック経路にも一意化を適用し、パスキー有効時でも重複保存を防止。
+- **タイトル抽出の強化**
+  - メール/電話番号の検出を追加。`amazon.co.jp` では電話を優先、それ以外ではメールを優先。
+- **フリッカ/自動表示の抑止**
+  - 直近のパスキー発火やユーザ操作に基づくサプレッサで、不要な自動ポップ表示を抑止。
 
 - **インラインポップのホバー安定化**
   - 入力欄からポップへマウスを移動する際に `blur` で即閉じないよう、ホバー/フォーカス判定と遅延（約120ms）を導入。

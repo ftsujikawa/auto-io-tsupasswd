@@ -35,7 +35,12 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "injected/tsu-webauthn-hook.js"
+        "injected/tsu-webauthn-hook.js",
+        "injected/webauthn-hook.js",
+        "injected/inflight-hook.js",
+        "injected/registration-hook.js",
+        "injected/close-api.js",
+        "vendor/simplewebauthn/index.umd.min.js"
       ],
       "matches": ["<all_urls>"]
     }

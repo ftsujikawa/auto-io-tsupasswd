@@ -101,7 +101,7 @@ while True:
 
         action = msg.get('action')
         if action == 'SAVE':
-            # 保存リクエスト: { action: 'SAVE', entry: { title, url, username, password, note } }
+            # 保存リクエスト: { action: 'SAVE', entry: { title, url, username, password, note, credential?, meta? } }
             entry = msg.get('entry') or {}
             secret = msg.get('secret') or ''
             title = str(entry.get('title') or '')
@@ -109,10 +109,201 @@ while True:
             username = str(entry.get('username') or '')
             password = str(entry.get('password') or '')
             note = str(entry.get('note') or '')
+            cred = entry.get('credential') or None
+            meta = entry.get('meta') or {}
+            rp_id = str(meta.get('rpId') or meta.get('rp_id') or '')
+            origin = str(meta.get('origin') or '')
             bin_path = find_bin()
             if not bin_path:
                 write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
                 last_err = None
+                continue
+            # 1) パスキー保存: credential 情報がある場合は positional 形式で passkey add を実行
+            if cred:
+                try:
+                    # base64url decode
+                    def b64url_to_bytes(s):
+                        try:
+                            s = s.replace('-', '+').replace('_', '/')
+                            pad = '=' * ((4 - len(s) % 4) % 4)
+                            return base64.b64decode(s + pad)
+                        except Exception:
+                            return b''
+                    # 簡易 CBOR パーサ（必要部分のみ）
+                    def _read_uint(b, i, ai):
+                        if ai < 24:
+                            return ai, i
+                        if ai == 24:
+                            return b[i], i+1
+                        if ai == 25:
+                            return int.from_bytes(b[i:i+2], 'big'), i+2
+                        if ai == 26:
+                            return int.from_bytes(b[i:i+4], 'big'), i+4
+                        if ai == 27:
+                            return int.from_bytes(b[i:i+8], 'big'), i+8
+                        raise ValueError('cbor invalid ai')
+                    def cbor_skip(b, i):
+                        mt = b[i] >> 5; ai = b[i] & 31; i += 1
+                        if mt in (0, 1):
+                            # uint / nint
+                            _, i = _read_uint(b, i, ai)
+                            return i
+                        if mt in (2, 3):
+                            ln, i = _read_uint(b, i, ai)
+                            return i + ln
+                        if mt == 4:
+                            ln, i = _read_uint(b, i, ai)
+                            for _ in range(ln):
+                                i = cbor_skip(b, i)
+                            return i
+                        if mt == 5:
+                            ln, i = _read_uint(b, i, ai)
+                            for _ in range(ln):
+                                i = cbor_skip(b, i)  # key
+                                i = cbor_skip(b, i)  # value
+                            return i
+                        if mt == 6:
+                            # tag, then one item
+                            i = cbor_skip(b, i)
+                            return i
+                        if mt == 7:
+                            # floats/simple
+                            if ai < 20:
+                                return i
+                            if ai == 24:
+                                return i+1
+                            if ai == 25:
+                                return i+2
+                            if ai == 26:
+                                return i+4
+                            if ai == 27:
+                                return i+8
+                            return i
+                        raise ValueError('cbor unsupported')
+                    def cbor_read(b, i=0):
+                        mt = b[i] >> 5; ai = b[i] & 31; i += 1
+                        if mt == 0:
+                            val, i = _read_uint(b, i, ai); return val, i
+                        if mt == 1:
+                            val, i = _read_uint(b, i, ai); return -1 - val, i
+                        if mt == 2:
+                            ln, i = _read_uint(b, i, ai); val = b[i:i+ln]; return val, i+ln
+                        if mt == 3:
+                            ln, i = _read_uint(b, i, ai); val = b[i:i+ln].decode('utf-8'); return val, i+ln
+                        if mt == 4:
+                            ln, i = _read_uint(b, i, ai); arr = []
+                            for _ in range(ln):
+                                v, i = cbor_read(b, i); arr.append(v)
+                            return arr, i
+                        if mt == 5:
+                            ln, i = _read_uint(b, i, ai); mp = {}
+                            for _ in range(ln):
+                                k, i = cbor_read(b, i)
+                                v, i = cbor_read(b, i)
+                                mp[k] = v
+                            return mp, i
+                        if mt == 6:
+                            # ignore tag
+                            v, i = cbor_read(b, i)
+                            return v, i
+                        if mt == 7:
+                            # simple/float: treat as None or bool
+                            if ai == 20: return False, i
+                            if ai == 21: return True, i
+                            if ai == 22: return None, i
+                            if ai == 23: return None, i
+                            if ai in (24,25,26,27):
+                                # skip and return None
+                                if ai == 24: i += 1
+                                if ai == 25: i += 2
+                                if ai == 26: i += 4
+                                if ai == 27: i += 8
+                                return None, i
+                            return None, i
+                        raise ValueError('cbor unsupported')
+
+                    import base64
+                    # 1) attestationObject -> CBOR map -> authData (bytes)
+                    resp = cred.get('response') if isinstance(cred, dict) else {}
+                    att_b64 = (resp or {}).get('attestationObject') or ''
+                    if not att_b64:
+                        raise ValueError('missing attestationObject')
+                    att = b64url_to_bytes(att_b64)
+                    att_map, _ = cbor_read(att, 0)
+                    auth = att_map.get('authData') if isinstance(att_map, dict) else None
+                    if not isinstance(auth, (bytes, bytearray)):
+                        raise ValueError('missing authData')
+                    auth = bytes(auth)
+                    # 2) parse authData to extract signCount, credentialId, credentialPublicKey (CBOR bytes)
+                    if len(auth) < 37:
+                        raise ValueError('authData too short')
+                    rpIdHash = auth[0:32]
+                    flags = auth[32]
+                    sign_count = int.from_bytes(auth[33:37], 'big')
+                    AT = (flags & 0x40) != 0
+                    i = 37
+                    cred_id_b64 = ''
+                    pubkey_b64 = ''
+                    if AT:
+                        if len(auth) < i + 16 + 2:
+                            raise ValueError('attestedCredentialData too short')
+                        aaguid = auth[i:i+16]; i += 16
+                        cred_len = int.from_bytes(auth[i:i+2], 'big'); i += 2
+                        if len(auth) < i + cred_len:
+                            raise ValueError('credentialId too short')
+                        cred_id = auth[i:i+cred_len]; i += cred_len
+                        cred_id_b64 = base64.urlsafe_b64encode(cred_id).rstrip(b'=').decode('ascii')
+                        # Remaining is CBOR-encoded credentialPublicKey; determine its byte length via skip
+                        start = i
+                        end = cbor_skip(auth, i)
+                        pubkey_cbor = auth[start:end]
+                        pubkey_b64 = base64.urlsafe_b64encode(pubkey_cbor).rstrip(b'=').decode('ascii')
+                        i = end
+                    # 3) assemble args per spec
+                    rp_for_cmd = rp_id or ''
+                    cid_for_cmd = (cred.get('rawId') if isinstance(cred, dict) else '') or cred_id_b64
+                    uh_for_cmd = str((meta.get('userHandle') if isinstance(meta, dict) else '') or '')
+                    pk_for_cmd = pubkey_b64
+                    if not (rp_for_cmd and cid_for_cmd and uh_for_cmd and pk_for_cmd):
+                        raise ValueError('missing required positional args')
+                    args = [bin_path, 'passkey', 'add', rp_for_cmd, cid_for_cmd, uh_for_cmd, pk_for_cmd]
+                    # optional flags
+                    try:
+                        transports = cred.get('transports') if isinstance(cred, dict) else None
+                        if isinstance(transports, list) and transports:
+                            args.extend(['--transports', ','.join([str(x) for x in transports])])
+                    except Exception:
+                        pass
+                    try:
+                        if title:
+                            args.extend(['--title', title])
+                    except Exception:
+                        pass
+                    try:
+                        args.extend(['--sign-count', str(sign_count)])
+                    except Exception:
+                        pass
+                    cp_pk = subprocess.run(args, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                    if cp_pk.returncode == 0:
+                        write_msg({"ok": True, "stdout": (cp_pk.stdout or '').strip(), "cmd": args})
+                        continue
+                    else:
+                        write_msg({
+                            "ok": False,
+                            "error": (((cp_pk.stderr or '').strip()) or ((cp_pk.stdout or '').strip()) or "tsupasswd passkey add failed"),
+                            "stdout": (cp_pk.stdout or '').strip(),
+                            "stderr": (cp_pk.stderr or '').strip(),
+                            "cmd": args
+                        })
+                        continue
+                except subprocess.TimeoutExpired:
+                    write_msg({"ok": False, "error": "tsupasswd passkey add timeout", "cmd": args})
+                    continue
+                except Exception as e:
+                    write_msg({"ok": False, "error": str(e)})
+                    continue
+            else:
+                write_msg({"ok": False, "error": "missing credential for passkey save"})
                 continue
 
         elif action == 'DELETE':
@@ -240,6 +431,10 @@ while True:
                                             e['title'] = str(rp)
                                     except Exception:
                                         pass
+                                try:
+                                    arr.sort(key=lambda x: (str((x.get('title') or '').strip()).lower()))
+                                except Exception:
+                                    pass
                                 new_out = json.dumps(arr, ensure_ascii=False)
                             else:
                                 arr = data if isinstance(data, list) else [data]
@@ -252,6 +447,10 @@ while True:
                                                 e['title'] = str(rp)
                                         except Exception:
                                             pass
+                                try:
+                                    arr.sort(key=lambda x: (str((x.get('title') or '').strip()).lower()) if isinstance(x, dict) else '')
+                                except Exception:
+                                    pass
                                 new_out = json.dumps(arr, ensure_ascii=False)
                             write_msg({"ok": True, "stdout": new_out, "cmd": cmd})
                         except Exception:

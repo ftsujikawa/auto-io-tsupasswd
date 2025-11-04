@@ -18,17 +18,351 @@
       // 優先度: autocomplete=username > type=email > name/id に user/mail を含む > その他テキスト
       const buckets = [
         'input[autocomplete="username"]',
+        'input[autocomplete="tel"]',
+        'input[inputmode="tel"]',
+        'input[type="tel"]',
         'input[type="email"]',
         'input[name*="user" i]',
         'input[name*="mail" i]',
+        'input[name*="tel" i]',
+        'input[name*="phone" i]',
         'input[id*="user" i]',
         'input[id*="mail" i]',
+        'input[id*="tel" i]',
+        'input[id*="phone" i]',
         'input[type="text"]'
       ];
       for (const sel of buckets) {
         const list = qAll(sel).filter((el) => { try { return isProbablyVisible(el) && isEditableInput(el); } catch(_) { return false; } });
         if (list.length) return list[0];
       }
+
+  // --- パスキー環境での従来ポップアップ徹底無効化（最終ガード） ---
+  try {
+    (function(){
+      // presentAuthPopup をラップし、パスキー環境では常に候補一覧のみ表示して return
+      try {
+        const __origPresent = presentAuthPopup;
+        if (typeof __origPresent === 'function' && !presentAuthPopup.__wrappedForPasskey) {
+          const wrapped = function(anchor){
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(anchor); } catch(_) {} return null; } } catch(_) {}
+            return __origPresent.apply(this, arguments);
+          };
+          try { wrapped.__wrappedForPasskey = true; } catch(_) {}
+          presentAuthPopup = wrapped;
+        }
+      } catch(_) {}
+      // 緊急フェイルセーフ: もし従来ポップアップDOMが生成されても、パスキー環境では即時に非表示化
+      try {
+        const mo = new MutationObserver(() => {
+          try {
+            if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) return;
+            const box = document.getElementById('tsupasswd-inline-popup');
+            if (box && box.style.display !== 'none') {
+              try { box.style.display = 'none'; } catch(_) {}
+              try { window.__tsu_last_hidden_at = Date.now(); } catch(_) {}
+              try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+              try { if (typeof dialogOpen !== 'undefined') dialogOpen = false; } catch(_) {}
+            }
+          } catch(_) {}
+        });
+        mo.observe(document.documentElement || document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style','class','hidden'] });
+      } catch(_) {}
+    })();
+  } catch(_) {}
+
+  // 直近ユーザ操作の有無
+  function hasRecentUserGesture(maxMs) {
+    try {
+      const now = Date.now();
+      const last = Number(window.__tsu_last_user_interact || 0);
+      const span = Number(maxMs || 1200);
+      return !!(last && (now - last) <= span);
+    } catch(_) { return false; }
+  }
+
+  // 直近にパスキーが発火したか（数秒間だけ true）。有効化検出ではなく「実際の発火」を重視して従来ポップアップを抑止する
+  function isPasskeyActiveNow() {
+    try {
+      const now = Date.now();
+      const last = Number(window.__tsu_pk_last_ts || 0);
+      const span = Number(window.__tsu_pk_recent_ms || 4000); // 抑止ウィンドウ（ms）
+      return !!(last && (now - last) < span);
+    } catch(_) { return false; }
+  }
+
+  // パスキー環境が有効（同期判定）か
+  function isPasskeyEnvOn() {
+    try {
+      if (typeof window.PublicKeyCredential !== 'function') return true;
+      if (window.__tsu_passkey_capable === true) return true;
+      if (window.__tsu_passkey_active === true) return true;
+      try {
+        const c = window.__tsu_pk_cache || {};
+        if (c && (c.rpId || c.credentialIdB64)) return true;
+      } catch(_) {}
+      return false;
+    } catch(_) { return false; }
+  }
+
+  // 抑止時間のデフォルト設定と、表示再開のためのリセットポイント
+  try { if (typeof window.__tsu_pk_recent_ms !== 'number') window.__tsu_pk_recent_ms = 4000; } catch(_) {}
+  try { window.addEventListener('pageshow', () => { try { window.__tsu_pk_last_ts = 0; } catch(_) {} }, true); } catch(_) {}
+  try {
+    document.addEventListener('visibilitychange', () => {
+      try { if (!document.hidden) setTimeout(() => { try { window.__tsu_pk_last_ts = 0; } catch(_) {} }, 300); } catch(_) {}
+    }, true);
+  } catch(_) {}
+
+  // 初期ロード自動表示は行わない（チラつき防止）
+  // 公開: window と tsupasswd 名前空間に参照をセット
+  try { window.savePasskeySilentlyRef = savePasskeySilently; } catch(_) {}
+  try {
+    window.tsupasswd = window.tsupasswd || {};
+    window.tsupasswd.savePasskeySilently = savePasskeySilently;
+    // デバッグ用: 判定ヘルパーも公開
+    window.tsupasswd.isPasskeyEnvOn = isPasskeyEnvOn;
+    window.tsupasswd.isPasskeyActiveNow = isPasskeyActiveNow;
+  } catch(_) {}
+
+  // パスキー登録ボタンのフック（クリック後に認証情報を保存）
+  function bindPasskeyRegisterButtons() {
+    try {
+      if (window.__tsu_reg_btn_bound) return;
+      window.__tsu_reg_btn_bound = true;
+      const doc = document;
+      const sel = 'button, input[type="button"], input[type="submit"], [role="button"]';
+      const nodes = Array.prototype.slice.call(doc.querySelectorAll(sel));
+      const isReg = (el) => {
+        try {
+          const text = ((el.innerText || el.textContent || '') + ' ' + (el.value || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.name || '') + ' ' + (el.id || '')).toLowerCase();
+          return /\b(register|signup|sign\s*up|create|作成|登録|passkey|パスキー)\b/i.test(text);
+        } catch(_) { return false; }
+      };
+      nodes.filter(isReg).forEach((el) => {
+        try {
+          const markActivity = () => { try { window.__tsu_external_webauthn_at = Date.now(); } catch(_) {} };
+          el.addEventListener('pointerdown', markActivity, true);
+          el.addEventListener('click', (ev) => {
+            try {
+              markActivity();
+              const anchor = document.activeElement || el;
+              // ページ側フックからの tsu:passkeyCaptured を待ってサイレント保存
+              try {
+                const waitMs = 20000;
+                if (window.tsupasswd && typeof window.tsupasswd.waitPasskey === 'function') {
+                  window.tsupasswd.waitPasskey(waitMs)
+                    .then(() => { try { savePasskeySilently(anchor); } catch(_) {} })
+                    .catch(() => { try { if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} });
+                } else {
+                  // フック未準備時はフォールバック
+                  setTimeout(() => { try { if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} }, 800);
+                }
+              } catch(_) {}
+            } catch(_) {}
+          }, true);
+        } catch(_) {}
+      });
+    } catch(_) {}
+  }
+  // サイレント保存（ネイティブ tsupasswd passkey add）
+  function savePasskeySilently(anchor, providedDetail) {
+    try {
+      try { console.info('[tsu] passkey save enter'); } catch(_) {}
+      try { window.__tsu_last_save_enter = Date.now(); } catch(_) {}
+      const raw = (providedDetail && typeof providedDetail === 'object') ? providedDetail : (extractPasskeyFromPage(document) || {});
+      const rpId = raw.rp || (location && location.hostname) || '';
+      let title = '';
+      try {
+        const pick = () => {
+          try {
+            const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
+            if (ax) return ax;
+          } catch(_) {}
+          try {
+            const ae = document && document.activeElement;
+            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
+              const v = String(ae.value || '').trim();
+              if (v) return v;
+            }
+          } catch(_) {}
+          try {
+            const cand = findUserInputCandidate(document);
+            if (cand && cand.element && typeof cand.element.value === 'string') {
+              const v = String(cand.element.value).trim();
+              if (v) return v;
+            }
+          } catch(_) {}
+          try {
+            const sels = [
+              'input[autocomplete="username"]',
+              'input[autocomplete="email"]',
+              'input[autocomplete="tel"]',
+              'input[inputmode="tel"]',
+              'input[type="email"]',
+              'input[type="tel"]',
+              'input[name*="email" i]',
+              'input[id*="email" i]',
+              'input[name*="user" i]',
+              'input[name*="mail" i]',
+              'input[name*="tel" i]',
+              'input[name*="phone" i]',
+              'input[id*="user" i]',
+              'input[id*="mail" i]',
+              'input[id*="tel" i]',
+              'input[id*="phone" i]',
+              'input[type="text"]'
+            ];
+            for (const sel of sels) {
+              const el = document && document.querySelector && document.querySelector(sel);
+              if (el && typeof el.value === 'string') {
+                const v = String(el.value || '').trim();
+                if (v) return v;
+              }
+            }
+          } catch(_) {}
+          // フォールバック: 画面上の入力から email らしい値を優先抽出
+          try {
+            const isProbablyVisible = (el) => {
+              try {
+                const r = el.getBoundingClientRect();
+                const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+                return !!(r && r.width > 0 && r.height > 0 && (!style || (style.visibility !== 'hidden' && style.display !== 'none')));
+              } catch(_) { return true; }
+            };
+            const nodes = Array.prototype.slice.call(document.querySelectorAll('input, textarea'));
+            const vals = nodes
+              .filter(el => el && typeof el.value === 'string' && isProbablyVisible(el))
+              .map(el => String(el.value || '').trim())
+              .filter(Boolean);
+            const looksEmail = (s) => { try { return /.+@.+\..+/.test(s); } catch(_) { return false; } };
+            const looksPhone = (s) => { try { return /^[+]?[-0-9()\s]{8,}$/.test(s.replace(/[\u3000\s]+/g,' ')); } catch(_) { return false; } };
+            // amazon.co.jp では phone を優先、それ以外は email を優先
+            const host = (location && location.hostname) ? String(location.hostname) : '';
+            if (/amazon\.co\.jp$/i.test(host)) {
+              const phoneVal = vals.find(looksPhone);
+              if (phoneVal) return phoneVal;
+              const emailVal = vals.find(looksEmail);
+              if (emailVal) return emailVal;
+            } else {
+              const emailVal = vals.find(looksEmail);
+              if (emailVal) return emailVal;
+              const phoneVal = vals.find(looksPhone);
+              if (phoneVal) return phoneVal;
+            }
+            // それでも無ければ最初の非空テキストを返す
+            if (vals.length) return vals[0];
+          } catch(_) {}
+          return '';
+        };
+        title = pick();
+      } catch(_) {}
+      if (!title) { title = String(raw.title || (document && document.title) || ''); }
+      try { console.info('[tsu] passkey title decide', { fromInput: !!(title && title.length), title }); } catch(_) {}
+      const detail = (function(){
+        const cntStr = raw.count != null ? String(raw.count) : '';
+        const cntNum = (cntStr && !isNaN(Number(cntStr))) ? Number(cntStr) : undefined;
+        return {
+          rp: String(raw.rp || rpId || ''),
+          cred: String(raw.cred || ''),
+          user: String(raw.user || ''),
+          pub: String(raw.pub || ''),
+          count: String(cntStr || ''),
+          transports: String(raw.transports || ''),
+          title: String(title || raw.title || ''),
+          rpId: String(raw.rp || rpId || ''),
+          credentialIdB64: String(raw.cred || ''),
+          userHandleB64: String(raw.user || ''),
+          publicKeyB64: String(raw.pub || ''),
+          signCount: cntNum,
+        };
+      })();
+      // デバッグ: 抽出状況をロギング
+      try { console.info('[tsu] passkey extracted', { rpId, hasCred: !!detail.credentialIdB64, hasUser: !!detail.userHandleB64, hasPub: !!detail.publicKeyB64, signCount: detail.signCount }); } catch(_) {}
+      // 必須チェック（credential のみ必須）
+      const hasCred = !!detail.credentialIdB64;
+      if (!hasCred) {
+        try { console.info('[tsu] passkey save skip: missing credentialIdB64'); } catch(_) {}
+        try { if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, raw); } } catch(_) {}
+        return;
+      }
+      const payload = { rpId: String(rpId || ''), title: String(title || ''), detail };
+      const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+      try { console.info('[tsu] passkey save begin', { rpId: payload.rpId, hasCred: !!detail.credentialIdB64 }); } catch(_) {}
+      try { window.__tsu_last_save_started = Date.now(); } catch(_) {}
+
+      // 一意タイトル生成
+      const uniqueTitle = (base, exists) => {
+        try {
+          const used = new Set((exists || []).map(s => String(s || '').trim()));
+          let t = String(base || '').trim();
+          if (!t) return '';
+          if (!used.has(t)) return t;
+          let i = 2;
+          while (i < 1000) {
+            const cand = `${t} (${i})`;
+            if (!used.has(cand)) return cand;
+            i++;
+          }
+          return `${t} (${Date.now()})`;
+        } catch(_) { return String(base || ''); }
+      };
+
+      const doSave = (finalTitle) => {
+        // 位置引数で渡す: rp_id, credential_id, user_handle, public_key
+        const args1 = ['passkey', 'add', payload.rpId, detail.credentialIdB64, detail.userHandleB64 || '', detail.publicKeyB64 || ''];
+        // 任意オプション
+        if (typeof detail.signCount === 'number') { args1.push('--sign-count', String(detail.signCount)); }
+        if (detail.transports) { args1.push('--transports', String(detail.transports)); }
+        if (finalTitle) { args1.push('--title', String(finalTitle)); }
+        try { console.info('[tsu] passkey save args', { args: args1 }); } catch(_) {}
+        sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: args1 }, (resp) => {
+          try { console.info('[tsu] passkey save end', resp); } catch(_) {}
+          try { window.__tsu_last_save_ended = Date.now(); } catch(_) {}
+          try {
+            const ok = !!(resp && (
+              resp.ok === true ||
+              resp.status === 'ok' ||
+              (resp.data && (resp.data.ok === true || resp.data.status === 'ok'))
+            ));
+            if (ok) { try { showToast('保存しました'); } catch(_) {} }
+            else { try { showToast('保存に失敗しました'); } catch(_) {} }
+          } catch(_) {}
+        });
+      };
+
+      // 既存タイトルを検索して重複回避（失敗時はそのまま保存）
+      const parseTitles = (raw) => {
+        try {
+          const read = (v) => {
+            if (!v) return [];
+            if (typeof v === 'string') { try { const d = JSON.parse(v); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+            if (v.stdout && typeof v.stdout === 'string') { try { const d = JSON.parse(v.stdout); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+            if (v.data && typeof v.data === 'string') { try { const d = JSON.parse(v.data); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+            if (Array.isArray(v.entries)) return v.entries;
+            if (Array.isArray(v)) return v;
+            return [];
+          };
+          const arr = read(raw && (raw.data || raw));
+          return arr.map(e => String((e && (e.title || e.name)) || '')).filter(Boolean);
+        } catch(_) { return []; }
+      };
+
+      try {
+        sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', payload.rpId, '--json'] }, (resp) => {
+          try {
+            const titles = parseTitles(resp);
+            const finalTitle = uniqueTitle(payload.title || payload.rpId, titles);
+            doSave(finalTitle);
+          } catch(_) { doSave(payload.title); }
+        });
+      } catch(_) {
+        doSave(payload.title);
+      }
+    } catch(e) { try { console.info('[tsu] passkey save error', String(e && e.message || e)); } catch(_) {} }
+  }
+  try { window.savePasskeySilentlyRef = savePasskeySilently; } catch(_) {}
+  try { window.tsupasswd = window.tsupasswd || {}; window.tsupasswd.savePasskeySilently = savePasskeySilently; } catch(_) {}
     } catch(_) {}
     return null;
   };
@@ -39,12 +373,14 @@
       safeSendMessage({ type: 'PING' }, (pong) => {
         if (!(pong && pong.ok)) {
           try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
+          try { console.info('[tsu] preflight PING failed'); } catch(_) {}
           return cb && cb({ ok: false, error: 'ping_failed' });
         }
         safeSendMessage(payload, cb);
       });
     } catch (_) {
       try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
+      try { console.info('[tsu] preflight exception'); } catch(_) {}
       return cb && cb({ ok: false, error: 'ping_failed' });
     }
   };
@@ -67,6 +403,23 @@
     };
   } catch(_) {}
 
+  try {
+    if (!window.__tsu_pk_event_bound) {
+      window.addEventListener('tsu:passkeyCaptured', function(ev){
+        try {
+          const d = ev && ev.detail ? ev.detail : extractPasskeyFromPage(document);
+          const key = String((d && (d.credentialIdB64 || d.cred)) || '');
+          window.__tsu_saved_cred = window.__tsu_saved_cred || {};
+          if (key && !window.__tsu_saved_cred[key]) {
+            window.__tsu_saved_cred[key] = Date.now();
+            savePasskeySilently(null);
+          }
+        } catch(_) {}
+      }, false);
+      window.__tsu_pk_event_bound = true;
+    }
+  } catch(_) {}
+
   // ページコンテキストへ WebAuthn フックを注入（isolated world を回避）
   (function injectPageHookOnce(){
     try {
@@ -78,10 +431,12 @@
       if (url) s.src = url;
       s.onload = function(){
         try { window.__tsu_page_injected = true; } catch(_) {}
+        try { console.info('[tsu] page hook injected'); } catch(_) {}
         try { s.remove(); } catch(_) {}
       };
       s.onerror = function(){
         try { window.__tsu_page_injected_error = true; } catch(_) {}
+        try { console.info('[tsu] page hook injection error'); } catch(_) {}
         try { s.remove(); } catch(_) {}
       };
       (document.head || document.documentElement).appendChild(s);
@@ -114,11 +469,161 @@
             return;
           }
           if (data.type !== 'tsu:passkeyCaptured') return;
+          try { console.info('[tsu] bridge: passkeyCaptured received'); } catch(_) {}
           window.__tsu_pk_cache = Object.assign(window.__tsu_pk_cache || {}, data.cache || {});
           // コンテンツ側でもイベント発火
           try {
             const detail = extractPasskeyFromPage(document);
             window.dispatchEvent(new CustomEvent('tsu:passkeyCaptured', { detail }));
+            try { window.__tsu_passkey_active = true; } catch(_) {}
+            // 取得時にサイレント保存を自動実行（抑止せず常にトリガー）
+            try {
+              try { console.info('[tsu] autosave(passkey): trigger from bridge'); } catch(_) {}
+              const f = (window.savePasskeySilentlyRef || (window.tsupasswd && window.tsupasswd.savePasskeySilently) || (typeof savePasskeySilently === 'function' && savePasskeySilently));
+              const exists = (typeof f === 'function');
+              try { console.info('[tsu] autosave(passkey): callable', { exists }); } catch(_) {}
+              if (!exists) { /* 関数未定義なら終了 */ return; }
+              // キャッシュ反映の遅延に備えて少し待ってから実行
+              try {
+                const startTs = Date.now();
+                setTimeout(() => {
+                  try { console.info('[tsu] autosave(passkey): invoke'); } catch(_) {}
+                  try { (window.savePasskeySilentlyRef || f)(null, detail); } catch(e) { try { console.info('[tsu] autosave(passkey) error', String(e && e.message || e)); } catch(_) {} }
+                }, 120);
+                // ウォッチドッグ: 一定時間内に enter マーカーが更新されなければフォールバック
+                setTimeout(() => {
+                  try {
+                    const entered = window.__tsu_last_save_enter || 0;
+                    if (!(entered && entered >= startTs)) {
+                      console.info('[tsu] autosave(passkey) watchdog: fallback inline');
+                      const raw = detail || extractPasskeyFromPage(document) || {};
+                      const rpId = raw.rp || (location && location.hostname) || '';
+                      let title = '';
+                      try {
+                        const pick = () => {
+                          try {
+                            const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
+                            if (ax) return ax;
+                          } catch(_) {}
+                          try {
+                            const ae = document && document.activeElement;
+                            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
+                              const v = String(ae.value || '').trim();
+                              if (v) return v;
+                            }
+                          } catch(_) {}
+                          try {
+                            const cand = findUserInputCandidate(document);
+                            if (cand && cand.element && typeof cand.element.value === 'string') {
+                              const v = String(cand.element.value).trim();
+                              if (v) return v;
+                            }
+                          } catch(_) {}
+                          try {
+                            const sels = [
+                              'input[autocomplete="username"]',
+                              'input[type="email"]',
+                              'input[name*="user" i]',
+                              'input[name*="mail" i]',
+                              'input[type="text"]'
+                            ];
+                            for (const sel of sels) {
+                              const el = document && document.querySelector && document.querySelector(sel);
+                              if (el && typeof el.value === 'string') {
+                                const v = String(el.value).trim();
+                                if (v) return v;
+                              }
+                            }
+                          } catch(_) {}
+                          return '';
+                        };
+                        title = pick();
+                      } catch(_) {}
+                      if (!title) { title = String(raw.title || (document && document.title) || ''); }
+                      try { console.info('[tsu] passkey title decide(fallback)', { fromInput: !!(title && title.length), title }); } catch(_) {}
+                      const det = {
+                        rp: String(raw.rp || rpId || ''),
+                        cred: String(raw.cred || raw.credentialIdB64 || ''),
+                        user: String(raw.user || raw.userHandleB64 || ''),
+                        pub: String(raw.pub || raw.publicKeyB64 || ''),
+                        count: String((raw.count != null ? String(raw.count) : '')),
+                        transports: String(raw.transports || ''),
+                        title: String(title || raw.title || ''),
+                        rpId: String(raw.rp || rpId || ''),
+                        credentialIdB64: String(raw.cred || raw.credentialIdB64 || ''),
+                        userHandleB64: String(raw.user || raw.userHandleB64 || ''),
+                        publicKeyB64: String(raw.pub || raw.publicKeyB64 || ''),
+                        signCount: (raw.signCount != null ? Number(raw.signCount) : undefined),
+                      };
+                      console.info('[tsu] passkey extracted', { rpId, hasCred: !!det.credentialIdB64, hasUser: !!det.userHandleB64, hasPub: !!det.publicKeyB64, signCount: det.signCount });
+                      if (!det.credentialIdB64) { console.info('[tsu] passkey save skip: missing credentialIdB64'); return; }
+                      const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+                      console.info('[tsu] passkey save begin', { rpId: det.rpId, hasCred: !!det.credentialIdB64 });
+                      // フォールバック経路でもタイトル一意化を実施
+                      const uniqueTitle = (base, exists) => {
+                        try {
+                          const used = new Set((exists || []).map(s => String(s || '').trim()));
+                          let t = String(base || '').trim();
+                          if (!t) return '';
+                          if (!used.has(t)) return t;
+                          let i = 2;
+                          while (i < 1000) {
+                            const cand = `${t} (${i})`;
+                            if (!used.has(cand)) return cand;
+                            i++;
+                          }
+                          return `${t} (${Date.now()})`;
+                        } catch(_) { return String(base || ''); }
+                      };
+
+                      const parseTitles = (raw) => {
+                        try {
+                          const read = (v) => {
+                            if (!v) return [];
+                            if (typeof v === 'string') { try { const d = JSON.parse(v); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+                            if (v.stdout && typeof v.stdout === 'string') { try { const d = JSON.parse(v.stdout); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+                            if (v.data && typeof v.data === 'string') { try { const d = JSON.parse(v.data); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+                            if (Array.isArray(v.entries)) return v.entries;
+                            if (Array.isArray(v)) return v;
+                            return [];
+                          };
+                          const arr = read(raw && (raw.data || raw));
+                          return arr.map(e => String((e && (e.title || e.name)) || '')).filter(Boolean);
+                        } catch(_) { return []; }
+                      };
+
+                      const doSave2 = (finalTitle) => {
+                        const args2 = ['passkey', 'add', det.rpId, det.credentialIdB64, det.userHandleB64 || '', det.publicKeyB64 || ''];
+                        if (typeof det.signCount === 'number') { args2.push('--sign-count', String(det.signCount)); }
+                        if (det.transports) { args2.push('--transports', String(det.transports)); }
+                        if (finalTitle) { args2.push('--title', String(finalTitle)); }
+                        try { console.info('[tsu] passkey save args(fallback)', { args: args2 }); } catch(_) {}
+                        sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: args2 }, (resp) => {
+                          try { console.info('[tsu] passkey save end', resp); } catch(_) {}
+                          try {
+                            const ok = !!(resp && (resp.ok === true || resp.status === 'ok' || (resp.data && (resp.data.ok === true || resp.data.status === 'ok'))));
+                            if (ok) { try { showToast('保存しました'); } catch(_) {} } else { try { showToast('保存に失敗しました'); } catch(_) {} }
+                          } catch(_) {}
+                        });
+                      };
+
+                      try {
+                        sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', det.rpId, '--json'] }, (resp2) => {
+                          try {
+                            const titles = parseTitles(resp2);
+                            const finalTitle = uniqueTitle(det.title || det.rpId, titles);
+                            doSave2(finalTitle);
+                          } catch(_) { doSave2(det.title); }
+                        });
+                      } catch(_) {
+                        doSave2(det.title);
+                      }
+                    }
+                  } catch(_) {}
+                }, 700);
+              } catch(e) { try { console.info('[tsu] autosave(passkey) schedule error', String(e && e.message || e)); } catch(_) {} }
+              // autosave 直後の自動表示は行わない（チラつき防止）
+            } catch(e) { try { console.info('[tsu] autosave(passkey) outer error', String(e && e.message || e)); } catch(_) {} }
             if (isAutoPopupEnabled()) {
               try {
                 const now = Date.now();
@@ -128,13 +633,24 @@
                     || document.querySelector('input[type="password"]')
                     || document.querySelector('input')
                     || null;
-                  openPasskeyDialog(anchor, detail);
+                  // 直近のユーザ操作が無い場合は表示しない（ページロード/自動フォーカス対策）
+                  if (!hasRecentUserGesture()) { return; }
+                  if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, detail); }
                 }
               } catch(_) {}
             }
           } catch(_) {}
         } catch(_) {}
       }, false);
+    } catch(_) {}
+    // ユーザ操作のタイムスタンプを追跡（表示ガード用）
+    try {
+      const onInteract = () => { try { window.__tsu_last_user_interact = Date.now(); } catch(_) {} };
+      window.addEventListener('pointerdown', onInteract, { capture: true, passive: true });
+      window.addEventListener('mousedown', onInteract, { capture: true, passive: true });
+      window.addEventListener('touchstart', onInteract, { capture: true, passive: true });
+      window.addEventListener('keydown', (e) => { try { if (!e.isComposing) window.__tsu_last_user_interact = Date.now(); } catch(_) {} }, true);
+      window.addEventListener('focusin', () => { try { window.__tsu_last_user_interact = Date.now(); } catch(_) {} }, true);
     } catch(_) {}
   })();
   // ブリッジ疎通テスト用ヘルパー（ページフックを模倣）
@@ -181,6 +697,7 @@
       if (c.credentialIdB64) out.cred = c.credentialIdB64;
       if (c.userHandleB64) out.user = c.userHandleB64;
       if (c.publicKeyB64) out.pub = c.publicKeyB64; // まだ未設定の可能性あり
+      if (c.attestationB64) out.att = c.attestationB64;
       if (typeof c.signCount === 'number') out.count = String(c.signCount);
       if (c.transports) out.transports = String(c.transports);
       if (c.title) out.title = String(c.title);
@@ -344,7 +861,9 @@
             } catch(_) {}
           }
         } catch(_) {}
+        try { console.info('[tsu] webauthn.create start'); } catch(_) {}
         const cred = await origCreate(options);
+        try { console.info('[tsu] webauthn.create done'); } catch(_) {}
         try {
           if (cred && cred.type === 'public-key') {
             try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
@@ -373,7 +892,9 @@
                       || document.querySelector('input[type="password"]')
                       || document.querySelector('input')
                       || null;
-                    openPasskeyDialog(anchor, detail);
+                    // 直近のユーザ操作が無い場合は表示しない
+                    if (!hasRecentUserGesture()) { return; }
+                    if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, detail); }
                   }
                 } catch(_) {}
               }
@@ -404,7 +925,9 @@
             } catch(_) {}
           }
         } catch(_) {}
+        try { console.info('[tsu] webauthn.get start'); } catch(_) {}
         const cred = await origGet(options);
+        try { console.info('[tsu] webauthn.get done'); } catch(_) {}
         try {
           if (cred && cred.type === 'public-key') {
             try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
@@ -850,7 +1373,17 @@
       try { t.__timer = setTimeout(function(){ try { t.style.display = 'none'; } catch(_) {} }, 1600); } catch(_) {}
     } catch(_) {}
   };
-  try { window.tsupasswd = window.tsupasswd || {}; window.tsupasswd.toast = showToast; } catch(_) {}
+  try {
+    window.tsupasswd = window.tsupasswd || {};
+    window.tsupasswd.toast = showToast;
+    // savePasskeySilently をグローバル公開（IIFE 内の定義を window から参照できるように）
+    if (typeof window.tsupasswd.savePasskeySilently !== 'function') {
+      try { window.tsupasswd.savePasskeySilently = function(){ try { return savePasskeySilently.apply(null, arguments); } catch(_) {} }; } catch(_) {}
+    }
+    if (typeof window.savePasskeySilentlyRef !== 'function') {
+      try { window.savePasskeySilentlyRef = window.tsupasswd.savePasskeySilently; } catch(_) {}
+    }
+  } catch(_) {}
 
   // chrome.runtime.sendMessage の安全ラッパー
   const safeSendMessage = function(payload, cb, _attempt) {
@@ -909,6 +1442,8 @@
     box.style.left = left + 'px';
   };
   const openSaveDialog = function(anchor, idText, pwText) {
+    // 直近にパスキーが発火している間だけ、従来ポップアップを抑止
+    try { if (isPasskeyActiveNow()) { return null; } } catch(_) {}
     const box = ensureFixedPopup(anchor);
     if (!box) return null;
     dialogOpen = true;
@@ -1062,135 +1597,327 @@
     return box;
   };
 
-  // パスキー保存ダイアログ（rp_id, credential_id, user_handle, public_key, [--sign-count], [--transports]）
-  const openPasskeyDialog = function(anchor, prefill) {
-    const box = ensureFixedPopup(anchor);
-    if (!box) return null;
-    dialogOpen = true;
-    const urlStr = location && location.href ? String(location.href) : '';
-    const rpIdInit = (prefill && prefill.rp) ? String(prefill.rp) : ((location && location.hostname) ? String(location.hostname) : '');
-    const html = '<div style="display:flex;flex-direction:column;gap:8px;width:100%;">'
-      + '<div style="font-weight:600;">パスキーを保存</div>'
-      + '<div style="display:flex;flex-direction:column;gap:6px;">'
-        + '<label style="font-size:12px;">タイトル<input id="tsu-pk-title" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc(((prefill && prefill.title) ? prefill.title : ((document && document.title) ? document.title : ''))) + '"></label>'
-        + '<label style="font-size:12px;">RP ID<input id="tsu-pk-rp" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc(rpIdInit) + '"></label>'
-        + '<label style="font-size:12px;">Credential ID<input id="tsu-pk-cred" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.cred) ? prefill.cred : '') + '"></label>'
-        + '<label style="font-size:12px;">User Handle<input id="tsu-pk-user" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.user) ? prefill.user : '') + '"></label>'
-        + '<label style="font-size:12px;">Public Key<input id="tsu-pk-pub" type="text" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.pub) ? prefill.pub : '') + '"></label>'
-        + '<div style="display:flex;gap:8px;">'
-          + '<label style="font-size:12px;flex:1;">Sign Count<input id="tsu-pk-count" type="number" min="0" step="1" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.count) ? prefill.count : '') + '"></label>'
-          + '<label style="font-size:12px;flex:1;">Transports (CSV)<input id="tsu-pk-trans" type="text" placeholder="usb,nfc,ble,internal" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e8eaed;" value="' + esc((prefill && prefill.transports) ? prefill.transports : '') + '"></label>'
-        + '</div>'
-      + '</div>'
-      + '<div style="display:flex;gap:8px;">'
-        + '<button id="tsu-pk-cancel" style="flex:1;background:#5f6368;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;">キャンセル</button>'
-        + '<button id="tsu-pk-ok" style="flex:1;background:#34a853;color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer;">保存</button>'
-      + '</div>'
-    + '</div>';
-    box.innerHTML = html;
-    box.style.display = 'block';
-    try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
-
-    const q = (sel) => box.querySelector(sel);
-    const rpEl = q('#tsu-pk-rp');
-    const credEl = q('#tsu-pk-cred');
-    const userEl = q('#tsu-pk-user');
-    const pubEl = q('#tsu-pk-pub');
-    const cntEl = q('#tsu-pk-count');
-    const trEl = q('#tsu-pk-trans');
-    const titleEl = q('#tsu-pk-title');
+  // パスキー専用ポップアップ呼び出し
+  function showPasskeyPopup(anchor) {
     try {
-      const fromInput2 = getUserValueForTitle(anchor, document);
-      const userHint2 = (fromInput2 && String(fromInput2).trim()) || '';
-      if (titleEl) { titleEl.value = userHint2 || (titleEl.value || ((document && document.title) ? document.title : '')); }
+      try { console.info('[tsu] showPasskeyPopup called', { anchorExists: !!anchor }); } catch(_) {}
+      const detail = extractPasskeyFromPage(document);
+      openPasskeyDialog(anchor, detail);
     } catch(_) {}
-    // タイトル手動編集検知と自動追従（パスキー保存）
-    let titleEdited2 = false;
-    if (titleEl) { titleEl.addEventListener('input', () => { titleEdited2 = true; }, { once: true }); }
-    if (userEl && titleEl) {
-      const onUserChange2 = () => {
+  }
+
+  // パスキー候補一覧（rpIdで検索し、タイトルを表示）
+  function showPasskeyCandidatePopup(anchor) {
+    try {
+      const doc = (anchor && anchor.ownerDocument) || document;
+      let box = doc.getElementById('tsupasswd-passkey-list');
+      if (!box) {
+        box = doc.createElement('div');
+        box.id = 'tsupasswd-passkey-list';
+        box.style.position = 'fixed';
+        box.style.background = 'rgba(32,33,36,0.98)';
+        box.style.color = '#e8eaed';
+        box.style.border = '1px solid rgba(0,0,0,0.2)';
+        box.style.borderRadius = '10px';
+        box.style.padding = '10px 12px';
+        box.style.fontSize = '12px';
+        box.style.lineHeight = '1.5';
+        box.style.boxShadow = '0 6px 18px rgba(0,0,0,0.3)';
+        box.style.zIndex = '2147483647';
+        box.style.display = 'none';
+        box.style.minWidth = '260px';
+        box.style.maxWidth = '420px';
+        box.style.maxHeight = '50vh';
+        box.style.overflowY = 'auto';
+        try { box.setAttribute('data-tsu-menu', 'passkey'); } catch(_) {}
+        (doc.body || doc.documentElement).appendChild(box);
+        // hover スタイル
         try {
-          if (!titleEdited2) {
-            const v = (userEl.value || '').trim();
-            titleEl.value = v || ((document && document.title) ? document.title : '');
+          if (!doc.getElementById('tsu-passkey-list-style')) {
+            const style = doc.createElement('style');
+            style.id = 'tsu-passkey-list-style';
+            style.textContent = '\n#tsupasswd-passkey-list .tsu-item{transition:background-color 120ms ease;padding:6px 4px;border-radius:6px;cursor:pointer;}\n#tsupasswd-passkey-list .tsu-item:hover{background:rgba(138,180,248,0.12);}\n';
+            (doc.head || doc.documentElement).appendChild(style);
           }
         } catch(_) {}
-      };
-      userEl.addEventListener('input', onUserChange2, false);
-      userEl.addEventListener('change', onUserChange2, false);
-    }
-    const btnCancel = q('#tsu-pk-cancel');
-    const btnOk = q('#tsu-pk-ok');
-    // 事前PING（失敗時にインラインエラーを表示、OKを無効化）
-    try {
-      if (btnOk) {
-        btnOk.disabled = true;
-        // エラー表示用の要素をボタン行の直前に用意
-        let inlineErr = box.querySelector('#tsu-pk-err');
-        if (!inlineErr) {
-          inlineErr = document.createElement('div');
-          inlineErr.id = 'tsu-pk-err';
-          inlineErr.style.display = 'none';
-          inlineErr.style.color = '#f28b82';
-          inlineErr.style.fontSize = '12px';
-          try { btnOk.parentElement.parentElement.insertBefore(inlineErr, btnOk.parentElement); } catch(_) { box.insertBefore(inlineErr, box.firstChild); }
-        }
-        sendWithPreflight({ type: 'PING' }, (pong) => {
-          try {
-            if (!(pong && pong.ok)) {
-              inlineErr.style.display = 'block';
-              inlineErr.innerHTML = '拡張に接続できません。<button id="tsu-reload-page3" style="margin-left:8px;padding:2px 6px;">ページを再読み込み</button>';
-              const b = inlineErr.querySelector('#tsu-reload-page3');
-              if (b) b.addEventListener('click', () => { try { location.reload(); } catch(_) {} }, { once: true });
-            } else {
-              btnOk.disabled = false;
-              inlineErr.style.display = 'none';
-            }
-          } catch(_) {}
-        });
       }
-    } catch(_) {}
-
-    const onCancel = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} dialogOpen = false; hidePopup(true); };
-    const onSave = (ev) => {
-      try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
-      const rp = (rpEl && rpEl.value || '').trim();
-      const cred = (credEl && credEl.value || '').trim();
-      const usr = (userEl && userEl.value || '').trim();
-      const pub = (pubEl && pubEl.value || '').trim();
-      const cntRaw = (cntEl && cntEl.value || '').trim();
-      const trans = (trEl && trEl.value || '').trim();
-      const title = (titleEl && titleEl.value || '').trim();
-      if (!rp || !cred || !usr || !pub) {
-        try { alert('必須: RP ID, Credential ID, User Handle, Public Key'); } catch(_) {}
-        return;
-      }
-      const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
-      const args = ['passkey', 'add', rp, cred, usr, pub];
-      if (cntRaw !== '') { args.push('--sign-count', String(parseInt(cntRaw, 10) || 0)); }
-      if (trans !== '') { args.push('--transports', trans); }
-      if (title !== '') {
-        const titleFlag = (window.tsupasswd && window.tsupasswd.passkeyTitleFlag) || '--title';
-        args.push(titleFlag, title);
-      }
-      sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args }, (resp) => {
+      const place = () => {
         try {
-          if (resp && resp.ok) {
-            try { showToast('保存しました'); } catch(_) {}
-            dialogOpen = false; hidePopup(true);
-          } else {
-            try { alert('保存に失敗しました: ' + (resp && (resp.error || resp.stderr || resp.stdout) || 'unknown')); } catch(_) {}
+          const r = (anchor && anchor.getBoundingClientRect) ? anchor.getBoundingClientRect() : null;
+          const gap = 8;
+          const vw = window.innerWidth || 0;
+          const vh = window.innerHeight || 0;
+          const bx = box.offsetWidth || 0;
+          const by = box.offsetHeight || 0;
+          const baseTop = r ? (r.bottom + gap) : 32;
+          const baseLeft = r ? Math.min(r.left, vw - bx - 8) : 16;
+          const top = Math.min(Math.max(baseTop, 8), Math.max(8, vh - by - 8));
+          const left = Math.min(Math.max(baseLeft, 8), Math.max(8, vw - bx - 8));
+          box.style.top = top + 'px';
+          box.style.left = left + 'px';
+        } catch(_) {}
+      };
+      // 初期表示
+      try { box.innerHTML = '<div style="opacity:0.85;">検索中...</div>'; box.style.display = 'block'; place(); } catch(_) {}
+
+      // rpId を取得
+      let rpId = '';
+      try { const rp = (window.tsupasswd && typeof window.tsupasswd.getRpInfo === 'function') ? window.tsupasswd.getRpInfo() : null; if (rp && rp.rpId) rpId = String(rp.rpId); } catch(_) {}
+      try { if (!rpId && location && location.hostname) rpId = String(location.hostname); } catch(_) {}
+      if (!rpId) { try { box.innerHTML = '<div style="opacity:0.85;">rpId が見つかりません</div>'; } catch(_) {} return box; }
+      try { console.info('[tsu] list search passkey q=', rpId); } catch(_) {}
+
+      const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+      // rpId の部分一致（サブドメインを落とした suffix）でも検索しマージ
+      const buildRpCandidates = (rp) => {
+        try {
+          const out = [];
+          const parts = String(rp || '').split('.').filter(Boolean);
+          if (parts.length >= 2) {
+            for (let k = 2; k <= parts.length; k++) {
+              const cand = parts.slice(parts.length - k).join('.');
+              // あまりに短い/広すぎる候補は除外（例: 'jp', 'co.jp'）
+              if (cand.length >= 4 && /\./.test(cand) && !/^([a-z]{2}|co|or|ne|ac|go|ed)\.jp$/i.test(cand) && !/^(com|net|org)\.[a-z]{2,}$/i.test(cand)) {
+                out.push(cand);
+              }
+            }
           }
-        } catch(_) { dialogOpen = false; hidePopup(true); }
+          // 元の rpId を先頭に
+          const uniq = [];
+          [String(rp || '')].concat(out).forEach(v => { if (v && !uniq.includes(v)) uniq.push(v); });
+          return uniq;
+        } catch(_) { return [String(rp || '')]; }
+      };
+      const parseEntries = (raw) => {
+        try {
+          if (!raw) return [];
+          if (typeof raw === 'string') { try { const d = JSON.parse(raw); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+          if (raw.stdout && typeof raw.stdout === 'string') { try { const d = JSON.parse(raw.stdout); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+          if (raw.data && typeof raw.data === 'string') { try { const d = JSON.parse(raw.data); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+          if (Array.isArray(raw.entries)) return raw.entries;
+          if (Array.isArray(raw)) return raw;
+          return [];
+        } catch(_) { return []; }
+      };
+      const rps = buildRpCandidates(rpId);
+      const merged = [];
+      const seen = new Set();
+      const addAll = (arr) => {
+        try {
+          (arr || []).forEach(e => {
+            try {
+              const key = JSON.stringify({ id: e && e.id, title: e && (e.title||e.name||''), rp: e && (e.rp||e.rp_id||'') });
+              if (!seen.has(key)) { seen.add(key); merged.push(e); }
+            } catch(_) {}
+          });
+        } catch(_) {}
+      };
+      const runNext = () => {
+        try {
+          if (!rps.length) { finalize(merged); return; }
+          const q = rps.shift();
+          sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', q, '--json'] }, (resp) => {
+            try { addAll(parseEntries(resp && (resp.data || resp))); } catch(_) {}
+            runNext();
+          });
+        } catch(_) { finalize(merged); }
+      };
+      const finalize = (list) => {
+        try {
+          const entries = Array.isArray(list) ? list : [];
+          const header = ''
+            + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">'
+            +   '<div style="font-weight:600;">パスキー候補</div>'
+            +   '<button id="tsu-pk-close" aria-label="閉じる" title="閉じる" style="border:none;background:transparent;color:#e8eaed;font-size:16px;line-height:1;cursor:pointer;padding:2px 6px;">×</button>'
+            + '</div>';
+          if (!entries.length) {
+            box.innerHTML = header + '<div style="opacity:0.85">該当するパスキーが見つかりません</div>';
+          } else {
+            const items = entries.map((e, i) => {
+              const t = (e && (e.title || e.name || e.rp || e.rp_id)) ? String(e.title || e.name || e.rp || e.rp_id) : '(no title)';
+              return '<div class="tsu-item" data-idx="' + i + '">' + t.replace(/</g,'&lt;') + '</div>';
+            }).join('');
+            box.innerHTML = header + '<div style="display:flex;flex-direction:column;gap:2px;max-height:42vh;overflow:auto;">' + items + '</div>';
+            // ホバー中のタイトルをページの入力欄へ反映
+            try {
+              const fillTitleInput = (text) => {
+                try {
+                  const d = box.ownerDocument || document;
+                  const val = String(text || '');
+                  const isTextEl = (el) => {
+                    if (!el) return false;
+                    const tn = (el.tagName || '').toLowerCase();
+                    if (tn === 'input') {
+                      const tp = (el.type || '').toLowerCase();
+                      return ['text','search','email','url','tel','password'].includes(tp);
+                    }
+                    if (tn === 'textarea') return true;
+                    if (el.isContentEditable) return true;
+                    return false;
+                  };
+                  const setVal = (el) => {
+                    try {
+                      if (!el) return false;
+                      if (el.isContentEditable) { el.textContent = val; }
+                      else if (typeof el.value === 'string') { el.value = val; }
+                      else return false;
+                      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
+                      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch(_) {}
+                      return true;
+                    } catch(_) { return false; }
+                  };
+                  // アクティブ要素を優先
+                  const ae = d.activeElement;
+                  if (isTextEl(ae) && !ae.readOnly && !ae.disabled) { if (setVal(ae)) return; }
+                  // title を示唆する入力欄を優先して探索
+                  const sel = [
+                    'input[name*="title" i]:not([readonly]):not([disabled])',
+                    'input[id*="title" i]:not([readonly]):not([disabled])',
+                    'input[type="text"]:not([readonly]):not([disabled])',
+                    'textarea:not([readonly]):not([disabled])',
+                    '[contenteditable="true"]'
+                  ].join(',');
+                  const cand = Array.prototype.slice.call(d.querySelectorAll(sel));
+                  for (const el of cand) { if (setVal(el)) return; }
+                } catch(_) {}
+              };
+              const nodes = box.querySelectorAll('.tsu-item');
+              nodes.forEach((node) => {
+                try {
+                  node.addEventListener('mouseenter', () => {
+                    try {
+                      const idx = parseInt(node.getAttribute('data-idx') || '-1', 10);
+                      const e = (idx >= 0 && idx < entries.length) ? entries[idx] : null;
+                      const t = e ? (e.title || e.name || e.rp || e.rp_id || '') : '';
+                      if (t) fillTitleInput(String(t));
+                    } catch(_) {}
+                  }, { passive: true });
+                  // クリック時: サイト側のパスキー認証をトリガ
+                  node.addEventListener('click', (ev) => {
+                    try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
+                    try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+                    try { window.__tsu_pk_last_ts = Date.now(); } catch(_) {}
+                    // 1) よくあるボタン/リンクを探索してクリック（外部リンクは除外）
+                    try {
+                      const d = box.ownerDocument || document;
+                      const all = Array.prototype.slice.call(d.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"]'));
+                      const sameOrigin = (href) => {
+                        try {
+                          if (!href) return true; // 空や # は許可
+                          if (href.startsWith('#') || href.startsWith('javascript:')) return true;
+                          const u = new URL(href, location.href);
+                          return u.origin === location.origin;
+                        } catch(_) { return false; }
+                      };
+                      const candidates = all.filter((el) => {
+                        try {
+                          const tn = (el.tagName || '').toLowerCase();
+                          if (tn === 'a') {
+                            const href = el.getAttribute('href') || '';
+                            return sameOrigin(href);
+                          }
+                          return true; // button/input/[role=button]
+                        } catch(_) { return false; }
+                      });
+                      const kw = ['passkey','パスキー','webauthn','生体','security key','セキュリティキー'];
+                      const loginKw = ['login','sign in','signin','ログイン','サインイン'];
+                      const registerKw = ['register','sign up','signup','登録','新規','create','作成'];
+                      const score = (el) => {
+                        try {
+                          let s = 0;
+                          const tn = (el.tagName || '').toLowerCase();
+                          const tp = (el.type || '').toLowerCase();
+                          // ボタン系を強く優先
+                          if (tn === 'button' || tp === 'submit' || tp === 'button') s += 5;
+                          if ((el.getAttribute && el.getAttribute('role')) === 'button') s += 3;
+                          const txt = (el.innerText || el.textContent || '').toLowerCase();
+                          const labs = [el.getAttribute('aria-label'), el.getAttribute('title'), el.id, el.name, el.value].map(x => (x || '').toLowerCase());
+                          for (const k of kw) { if (txt.includes(k) || labs.some(v => v.includes(k))) s += 2; }
+                          // ログイン系ワードで加点、登録系ワードで減点
+                          if (loginKw.some(k => txt.includes(k) || labs.some(v => v.includes(k)))) s += 4;
+                          if (registerKw.some(k => txt.includes(k) || labs.some(v => v.includes(k)))) s -= 6;
+                          // 近傍にパスキー語がある場合も加点
+                          const near = el.closest && el.closest('label, div, span, form');
+                          const ntext = near ? (near.innerText || near.textContent || '').toLowerCase() : '';
+                          for (const k of kw) { if (ntext.includes(k)) s += 1; }
+                          // 近傍の文脈でもログイン/登録で重み付け
+                          if (loginKw.some(k => ntext.includes(k))) s += 2;
+                          if (registerKw.some(k => ntext.includes(k))) s -= 3;
+                          // form 内は少し加点
+                          if (el.closest && el.closest('form')) s += 1;
+                          return s;
+                        } catch(_) { return 0; }
+                      };
+                      const sorted = candidates.map(el => ({ el, s: score(el) })).filter(o => o.s > 0).sort((a,b) => b.s - a.s);
+                      if (sorted.length) {
+                        const target = sorted[0].el;
+                        try { target.click(); } catch(_) {}
+                      } else {
+                        // 2) カスタムイベントでページ側へ依頼（サイト側がリスナで対応）
+                        try { window.dispatchEvent(new CustomEvent('tsu:triggerPasskeyLogin', { detail: {} })); } catch(_) {}
+                      }
+                    } catch(_) {
+                      try { window.dispatchEvent(new CustomEvent('tsu:triggerPasskeyLogin', { detail: {} })); } catch(_) {}
+                    }
+                    // 最後に候補ポップアップを閉じる
+                    try { if (box && box.parentNode) box.parentNode.removeChild(box); } catch(_) {}
+                  }, { capture: true });
+                } catch(_) {}
+              });
+            } catch(_) {}
+          }
+          place();
+          // close
+          try {
+            const closeBtn = box.querySelector('#tsu-pk-close');
+            const onClose = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} try { if (box && box.parentNode) box.parentNode.removeChild(box); } catch(_) {} };
+            if (closeBtn) { closeBtn.addEventListener('click', onClose, { once: true }); closeBtn.addEventListener('pointerdown', onClose, { once: true }); }
+          } catch(_) {}
+        } catch(_) {}
+      };
+      runNext();
+      return box;
+    } catch(_) { return null; }
+  }
+
+  // パスキー利用可否（キーワード判定）
+  function isPasskeyCapable() {
+    try {
+      const parts = [];
+      try { if (document && document.title) parts.push(String(document.title)); } catch(_) {}
+      try { if (document && document.body && document.body.innerText) parts.push(String(document.body.innerText)); } catch(_) {}
+      try {
+        const metas = Array.prototype.slice.call(document.querySelectorAll('meta[name], meta[property], meta[content]'));
+        metas.forEach(m => { try { const c = m.getAttribute('content'); if (c) parts.push(String(c)); } catch(_) {} });
+      } catch(_) {}
+      const haystack = parts.join('\n');
+      // 英語/日本語の関連語を幅広く判定
+      const patterns = [
+        /passkey/i,
+        /webauthn/i,
+        /fido\s?2?/i,
+        /security\s?key/i,
+        /パスキー/i,
+        /生体/i,
+        /指紋/i,
+        /顔認証/i,
+        /セキュリティキー/i,
+        /セキュリティ\s?キー/i
+      ];
+      const found = patterns.some((re) => {
+        try { return re.test(haystack); } catch(_) { return false; }
       });
-    };
-    if (btnCancel) { btnCancel.addEventListener('click', onCancel, true); btnCancel.addEventListener('pointerdown', onCancel, true); }
-    if (btnOk) { btnOk.addEventListener('click', onSave, true); btnOk.addEventListener('pointerdown', onSave, true); }
-    return box;
-  };
+      try { console.info('[tsu] passkey capability(keyword)', { found }); } catch(_) {}
+      return Promise.resolve(!!found);
+    } catch(_) { return Promise.resolve(false); }
+  }
 
   const presentAuthPopup = function(anchor) {
     try {
+      // パスキー環境では従来ポップアップを出さず、候補一覧のみ表示
+      try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(anchor); } catch(_) {} return null; } } catch(_) {}
+      // パスキーが使用できる場合は、登録ボタンのみフック（自動表示はしない）
+      try { isPasskeyCapable().then((ok) => { try { if (ok) { bindPasskeyRegisterButtons(); /* no auto show */ } } catch(_) {} }); } catch(_) {}
       // パスワード欄は常に許可。ユーザ名欄は、(a) 明確にメール/ユーザID欄なら常に許可 (b) それ以外は同一フォームに可視パス有 or 許可文脈
       const userLike = !!(anchor && (isUserLike(anchor) || (isUsernameOnlyAllowedContext() && isTextboxLike(anchor))));
       const passLike = !!(anchor && isPassLike(anchor));
@@ -1370,9 +2097,6 @@
                   + '<div>ユーザID: <span>' + esc(u || '未検出') + '</span></div>'
                   + '<div>パスワード: <span>' + (p ? masked(p) : '未検出') + '</span></div>'
                 + '</div>'
-                + '<div style="margin-top:6px;display:flex;gap:6px;justify-content:flex-end;">'
-                  + '<button class="tsu-del" data-idx="' + i + '" style="background:#d93025;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">削除</button>'
-                + '</div>'
               + '</div>';
           }
         } else {
@@ -1428,33 +2152,7 @@
             node.addEventListener('click', onClickFillClose, true);
           });
         } catch(_) {}
-        try {
-          const delButtons = box.querySelectorAll('.tsu-del');
-          delButtons.forEach((btn) => {
-            const idx = parseInt(btn.getAttribute('data-idx') || '-1', 10);
-            const cred = (idx >= 0 && idx < entriesAll.length) ? entriesAll[idx] : null;
-            const onDel = (ev) => {
-              try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
-              try {
-                const rid = cred && cred.id ? String(cred.id) : '';
-                if (!rid) { try { alert('削除に失敗しました'); } catch(_) {} return; }
-                const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
-                chrome.runtime.sendMessage({ type: 'DELETE_TSUPASSWD', host, entry: { id: rid } }, (resp) => {
-                  try {
-                    if (resp && resp.ok) {
-                      const itemNode = btn.closest('.tsu-entry');
-                      if (itemNode && itemNode.parentNode) itemNode.parentNode.removeChild(itemNode);
-                    } else {
-                      try { alert('削除に失敗しました'); } catch(_) {}
-                    }
-                  } catch(_) {}
-                });
-              } catch(_) {}
-            };
-            btn.addEventListener('click', onDel, true);
-            btn.addEventListener('pointerdown', onDel, true);
-          });
-        } catch(_) {}
+        // 削除ボタンは使用しないため、関連UI/イベントは無し
         box.style.display = 'block';
         try { requestAnimationFrame(() => placePopup(anchor, box)); } catch(_) { placePopup(anchor, box); }
         try { scheduleAutoHide(6000); } catch(_) {}
@@ -1528,6 +2226,16 @@
         if (!user.__tsuBound) {
           const showOnClick = function(){
             if (dialogOpen) return;
+            // パスキー環境では従来ポップアップを出さない
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+            // パスキー有効時はクリックでも表示しない（チラつき防止）
+            try {
+              if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
+                try { hidePopup(true); } catch(_) {}
+                try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+                return;
+              }
+            } catch(_) {}
             try {
               const f = user && (user.form || (user.closest && user.closest('form')));
               if (f && f.__tsuBound) return;
@@ -1543,6 +2251,16 @@
         if (!pass.__tsuBound) {
           const showOnClickP = function(){
             if (dialogOpen) return;
+            // パスキー環境では従来ポップアップを出さない
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+            // パスキー有効時はクリックでも表示しない
+            try {
+              if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
+                try { hidePopup(true); } catch(_) {}
+                try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+                return;
+              }
+            } catch(_) {}
             try {
               const f = pass && (pass.form || (pass.closest && pass.closest('form')));
               if (f && f.__tsuBound) return;
@@ -1563,7 +2281,20 @@
           if (!firstAnchor && usersOnly.length) firstAnchor = usersOnly[0];
           for (const uEl of usersOnly) {
             if (uEl.__tsuBound) continue;
-            const showOnClickU = function(){ if (dialogOpen) return; const b = presentAuthPopup(pickPreferredAnchor(uEl)); attachBoxClick(b); };
+            const showOnClickU = function(){
+              if (dialogOpen) return;
+              // パスキー環境では従来ポップアップを出さない
+              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+              // パスキー有効時はクリックでも表示しない
+              try {
+                if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
+                  try { hidePopup(true); } catch(_) {}
+                  try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+                  return;
+                }
+              } catch(_) {}
+              const b = presentAuthPopup(pickPreferredAnchor(uEl)); attachBoxClick(b);
+            };
             uEl.addEventListener('pointerdown', showOnClickU, true);
             uEl.addEventListener('click', showOnClickU);
             uEl.addEventListener('blur', hidePopupDelayed);
@@ -1574,7 +2305,20 @@
           if (!firstAnchor && passesOnly.length) firstAnchor = passesOnly[0];
           for (const pEl of passesOnly) {
             if (pEl.__tsuBound) continue;
-            const showOnClickOnlyP = function(){ if (dialogOpen) return; const b = presentAuthPopup(pickPreferredAnchor(pEl)); attachBoxClick(b); };
+            const showOnClickOnlyP = function(){
+              if (dialogOpen) return;
+              // パスキー環境では従来ポップアップを出さない
+              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+              // パスキー有効時はクリックでも表示しない
+              try {
+                if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
+                  try { hidePopup(true); } catch(_) {}
+                  try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+                  return;
+                }
+              } catch(_) {}
+              const b = presentAuthPopup(pickPreferredAnchor(pEl)); attachBoxClick(b);
+            };
             pEl.addEventListener('pointerdown', showOnClickOnlyP, true);
             pEl.addEventListener('click', showOnClickOnlyP);
             pEl.addEventListener('blur', hidePopupDelayed);
@@ -1598,6 +2342,8 @@
               ok = rectOk && visOk && (ptrOk || isUsernameOnlyAllowedContext());
             } catch(_) { ok = false; }
             if (ok) {
+              // パスキー環境では従来ポップアップを出さない
+              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
               const b = presentAuthPopup(anchor); attachBoxClick(b);
               window.__tsu_auto_shown = true;
             }
@@ -1609,7 +2355,13 @@
       if (!window.__tsu_click_bound) {
         const onClickIn = (e) => {
           try {
-            if (dialogOpen) return;
+            if (dialogOpen) {
+              try {
+                const box = document.getElementById('tsupasswd-inline-popup');
+                const shown = !!(box && box.style && box.style.display !== 'none');
+                if (!shown) { dialogOpen = false; } else { return; }
+              } catch(_) { return; }
+            }
             const path = (e.composedPath && e.composedPath()) || [];
             const t = (path && path.length ? path[0] : e.target);
             const inPopup = !!(t && (t.closest ? t.closest('#tsupasswd-inline-popup') : null));
@@ -1633,22 +2385,44 @@
             }
             // hasAuthInputs は presentAuthPopup 側でガードするためここでは不要
             // ここからは表示トリガ。抑止中/直後は新規表示を抑える
+            // パスキー非発火時は suppress を解除して、クリックでも確実に表示できるようにする
+            try { if (!isPasskeyActiveNow()) { window.__tsu_suppress_until = 0; } } catch(_) {}
             try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
             const pref = pickPreferredAnchor(el);
             // 既に表示中かつロック中は、別要素（非優先アンカー）からのイベントを無視して揺れを防ぐ
             try {
               if (window.__tsu_current_anchor && window.__tsu_current_anchor !== pref) {
-                return;
+                // 異なるアンカーに移った場合は現在アンカーを更新して表示を許可
+                window.__tsu_current_anchor = pref;
               }
             } catch(_) {}
+            // 直近パスキー発火時のみクリック表示を抑止
+            try { if (isPasskeyActiveNow()) return; } catch(_) {}
+            // パスキー環境では従来ポップアップを出さず、候補一覧を即表示
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pref); } catch(_) {} return; } } catch(_) {}
             const b = presentAuthPopup(pref);
             attachBoxClick(b);
           } catch(_) {}
         };
         const onFocusIn = (e) => {
           try {
-            if (dialogOpen) return;
-            if (!isUsernameOnlyAllowedContext()) return;
+            if (dialogOpen) {
+              try {
+                const box = document.getElementById('tsupasswd-inline-popup');
+                const shown = !!(box && box.style && box.style.display !== 'none');
+                if (!shown) { dialogOpen = false; } else { return; }
+              } catch(_) { return; }
+            }
+            // 直近パスキー発火時はフォーカス表示を抑止（チラつき防止）
+            try {
+              if (isPasskeyActiveNow()) {
+                try { hidePopup(true); } catch(_) {}
+                try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
+                return;
+              }
+            } catch(_) {}
+            // 抑止フラグを無条件で解除（再フォーカスで確実に表示）
+            try { window.__tsu_suppress_until = 0; } catch(_) {}
             const path = (e.composedPath && e.composedPath()) || [];
             const t = (path && path.length ? path[0] : e.target);
             const el = (t && t.nodeType === 1)
@@ -1660,12 +2434,21 @@
             const userLikeEl = !!(el && (isUserLike(el) || (isUsernameOnlyAllowedContext() && isTextboxLike(el))));
             const passLikeEl = !!(el && isPassLike(el));
             if (!(el && (userLikeEl || passLikeEl))) return;
-            // ここからは表示トリガ。抑止中/直後は新規表示を抑える
-            try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
+            // ここからは表示トリガ。抑止中/直後は新規表示を抑える（ただしパスワード欄はバイパス）
+            {
+              let guarded = false;
+              try { guarded = !!((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)); } catch(_) {}
+              if (guarded && !passLikeEl) return;
+            }
             const pref = pickPreferredAnchor(el);
-            try { if (window.__tsu_current_anchor && window.__tsu_current_anchor !== pref) return; } catch(_) {}
+            // 現在アンカーを無条件に更新
+            try { window.__tsu_current_anchor = pref; } catch(_) {}
+            // パスキー環境では従来ポップアップを出さない
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
             const b = presentAuthPopup(pref);
             attachBoxClick(b);
+            // パスキー有効時はフォーカスで即一覧表示（タイトルを並べる）
+            try { isPasskeyCapable().then((ok) => { try { if (ok) showPasskeyCandidatePopup(pref); } catch(_) {} }); } catch(_) {}
           } catch(_) {}
         };
         document.addEventListener('click', onClickIn, true);
@@ -1676,6 +2459,8 @@
           try {
             if (dialogOpen) return;
             if (!isUsernameOnlyAllowedContext()) return;
+            // 直近パスキー発火時はキー入力表示を抑止（チラつき防止）
+            try { if (isPasskeyActiveNow()) return; } catch(_) {}
             const path = (e.composedPath && e.composedPath()) || [];
             const t = (path && path.length ? path[0] : e.target);
             const el = (t && t.nodeType === 1)
@@ -1690,6 +2475,9 @@
             try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
             const pref = pickPreferredAnchor(el);
             try { if (window.__tsu_current_anchor && window.__tsu_current_anchor !== pref) return; } catch(_) {}
+            // パスキー環境では従来ポップアップを出さない
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
             const b = presentAuthPopup(pref);
             attachBoxClick(b);
           } catch(_) {}
@@ -1726,6 +2514,7 @@
   const run = async () => {
     if (ran) return; ran = true;
     try {
+      try { bindPasskeyRegisterButtons(); } catch(_) {}
       const urlStr = location.href || '';
       const url = new URL(urlStr);
       const allowed = url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'file:';
@@ -1774,6 +2563,7 @@
           try {
             window.__tsu_auto_shown = false;
             fillAndBind(cachedCreds || { username: '', password: '' });
+            try { bindPasskeyRegisterButtons(); } catch(_) {}
           } catch(_) {}
         };
         try {

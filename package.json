@@ -7,5 +7,9 @@
   },
   "devDependencies": {
     "sharp": "^0.33.4"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.2.2",
+    "@simplewebauthn/server": "^13.2.2"
   }
 }
