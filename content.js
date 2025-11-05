@@ -36,6 +36,10 @@
         const list = qAll(sel).filter((el) => { try { return isProbablyVisible(el) && isEditableInput(el); } catch(_) { return false; } });
         if (list.length) return list[0];
       }
+      // 見つからない場合は null を返す
+      return null;
+    } catch(_) { return null; }
+  };
 
   // --- パスキー環境での従来ポップアップ徹底無効化（最終ガード） ---
   try {
@@ -45,7 +49,12 @@
         const __origPresent = presentAuthPopup;
         if (typeof __origPresent === 'function' && !presentAuthPopup.__wrappedForPasskey) {
           const wrapped = function(anchor){
-            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(anchor); } catch(_) {} return null; } } catch(_) {}
+            try {
+              if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
+                try { showPasskeyCandidatePopup(anchor); } catch(_) {}
+                return null;
+              }
+            } catch(_) {}
             return __origPresent.apply(this, arguments);
           };
           try { wrapped.__wrappedForPasskey = true; } catch(_) {}
@@ -67,6 +76,34 @@
           } catch(_) {}
         });
         mo.observe(document.documentElement || document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style','class','hidden'] });
+      } catch(_) {}
+      // presentAuthPopup が後から定義される場合に備え、一定時間ポーリングしてラップを適用
+      try {
+        if (!window.__tsu_present_wrap_polling) {
+          window.__tsu_present_wrap_polling = true;
+          const start = Date.now();
+          const poll = () => {
+            try {
+              if (typeof presentAuthPopup === 'function' && !presentAuthPopup.__wrappedForPasskey) {
+                const __origPresent2 = presentAuthPopup;
+                const wrapped2 = function(anchor){
+                  try {
+                    if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
+                      try { showPasskeyCandidatePopup(anchor); } catch(_) {}
+                      return null;
+                    }
+                  } catch(_) {}
+                  return __origPresent2.apply(this, arguments);
+                };
+                try { wrapped2.__wrappedForPasskey = true; } catch(_) {}
+                presentAuthPopup = wrapped2;
+                return; // wrapped
+              }
+            } catch(_) {}
+            if (Date.now() - start < 8000) { try { setTimeout(poll, 200); } catch(_) {} }
+          };
+          try { setTimeout(poll, 200); } catch(_) { poll(); }
+        }
       } catch(_) {}
     })();
   } catch(_) {}
@@ -94,7 +131,13 @@
   // パスキー環境が有効（同期判定）か
   function isPasskeyEnvOn() {
     try {
-      if (typeof window.PublicKeyCredential !== 'function') return true;
+      // 明示的な無効化フラグを優先
+      try {
+        const cfg = (window && window.tsupasswd) ? window.tsupasswd : null;
+        if (cfg && (cfg.disablePasskey === true || cfg.passkeyEnabled === false)) return false;
+      } catch(_) {}
+      // PublicKeyCredential が存在しない環境は非対応（無効）
+      if (typeof window.PublicKeyCredential !== 'function') return false;
       if (window.__tsu_passkey_capable === true) return true;
       if (window.__tsu_passkey_active === true) return true;
       try {
@@ -153,10 +196,10 @@
                 if (window.tsupasswd && typeof window.tsupasswd.waitPasskey === 'function') {
                   window.tsupasswd.waitPasskey(waitMs)
                     .then(() => { try { savePasskeySilently(anchor); } catch(_) {} })
-                    .catch(() => { try { if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} });
+                    .catch(() => { try { if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} });
                 } else {
                   // フック未準備時はフォールバック
-                  setTimeout(() => { try { if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} }, 800);
+                  setTimeout(() => { try { if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} }, 800);
                 }
               } catch(_) {}
             } catch(_) {}
@@ -171,6 +214,29 @@
       try { console.info('[tsu] passkey save enter'); } catch(_) {}
       try { window.__tsu_last_save_enter = Date.now(); } catch(_) {}
       const raw = (providedDetail && typeof providedDetail === 'object') ? providedDetail : (extractPasskeyFromPage(document) || {});
+      // 多重保存防止（同一 credentialId を一定時間内に二重保存しない）
+      try {
+        const keyNow = String((raw && (raw.cred || raw.credentialIdB64)) || '');
+        if (keyNow) {
+          window.__tsu_saved_cred = window.__tsu_saved_cred || {};
+          const last = Number(window.__tsu_saved_cred[keyNow] || 0);
+          const now = Date.now();
+          if (last && (now - last) < 5000) {
+            try { console.info('[tsu] passkey save dedup skip (recent)'); } catch(_) {}
+            // 保存はスキップするが、候補即時反映のため直近キャッシュへは追加
+            try {
+              const rpTmp = String(raw.rp || (location && location.hostname) || '');
+              const ttlTmp = String(raw.title || (document && document.title) || '');
+              window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
+              window.__tsu_pk_recent_entries.unshift({ title: ttlTmp, rp: rpTmp, cred: keyNow });
+              if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
+            } catch(_) {}
+            return;
+          }
+          // 先にマークしてレースを防ぐ
+          window.__tsu_saved_cred[keyNow] = now;
+        }
+      } catch(_) {}
       const rpId = raw.rp || (location && location.hostname) || '';
       let title = '';
       try {
@@ -283,7 +349,7 @@
       const hasCred = !!detail.credentialIdB64;
       if (!hasCred) {
         try { console.info('[tsu] passkey save skip: missing credentialIdB64'); } catch(_) {}
-        try { if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, raw); } } catch(_) {}
+        try { if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, raw); } } catch(_) {}
         return;
       }
       const payload = { rpId: String(rpId || ''), title: String(title || ''), detail };
@@ -325,7 +391,15 @@
               resp.status === 'ok' ||
               (resp.data && (resp.data.ok === true || resp.data.status === 'ok'))
             ));
-            if (ok) { try { showToast('保存しました'); } catch(_) {} }
+            if (ok) {
+              try { showToast('保存しました'); } catch(_) {}
+              // 直近の候補に加える（ポップアップ即時反映用）
+              try {
+                window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
+                window.__tsu_pk_recent_entries.unshift({ title: detail.title || '', rp: detail.rpId || detail.rp || '', cred: detail.credentialIdB64 || '' });
+                if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
+              } catch(_) {}
+            }
             else { try { showToast('保存に失敗しました'); } catch(_) {} }
           } catch(_) {}
         });
@@ -352,8 +426,9 @@
         sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', payload.rpId, '--json'] }, (resp) => {
           try {
             const titles = parseTitles(resp);
-            const finalTitle = uniqueTitle(payload.title || payload.rpId, titles);
-            doSave(finalTitle);
+            const baseTitle = (payload.title || payload.rpId || '');
+            if (Array.isArray(titles) && titles.includes(String(baseTitle))) { try { showToast('同名のタイトルが既に存在するため保存しません'); } catch(_) {} return; }
+            doSave(baseTitle);
           } catch(_) { doSave(payload.title); }
         });
       } catch(_) {
@@ -361,11 +436,9 @@
       }
     } catch(e) { try { console.info('[tsu] passkey save error', String(e && e.message || e)); } catch(_) {} }
   }
+
   try { window.savePasskeySilentlyRef = savePasskeySilently; } catch(_) {}
   try { window.tsupasswd = window.tsupasswd || {}; window.tsupasswd.savePasskeySilently = savePasskeySilently; } catch(_) {}
-    } catch(_) {}
-    return null;
-  };
 
   // 送信前に拡張の生存確認（PING）が通ったら本送信
   const sendWithPreflight = function(payload, cb) {
@@ -409,11 +482,15 @@
         try {
           const d = ev && ev.detail ? ev.detail : extractPasskeyFromPage(document);
           const key = String((d && (d.credentialIdB64 || d.cred)) || '');
-          window.__tsu_saved_cred = window.__tsu_saved_cred || {};
-          if (key && !window.__tsu_saved_cred[key]) {
-            window.__tsu_saved_cred[key] = Date.now();
-            savePasskeySilently(null);
-          }
+          // ここでは保存は実行しない（bridge 側 autosave に委譲）。
+          // また、dedup 用の保存済みマーク(__tsu_saved_cred)は付けない（保存がスキップされてしまうため）。
+          // 多重イベント観測用の seen マークのみ付ける。
+          try {
+            window.__tsu_seen_cred = window.__tsu_seen_cred || {};
+            if (key && !window.__tsu_seen_cred[key]) {
+              window.__tsu_seen_cred[key] = Date.now();
+            }
+          } catch(_) {}
         } catch(_) {}
       }, false);
       window.__tsu_pk_event_bound = true;
@@ -611,8 +688,9 @@
                         sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', det.rpId, '--json'] }, (resp2) => {
                           try {
                             const titles = parseTitles(resp2);
-                            const finalTitle = uniqueTitle(det.title || det.rpId, titles);
-                            doSave2(finalTitle);
+                            const baseTitle = (det.title || det.rpId || '');
+                            if (Array.isArray(titles) && titles.includes(String(baseTitle))) { try { showToast('同名のタイトルが既に存在するため保存しません'); } catch(_) {} return; }
+                            doSave2(baseTitle);
                           } catch(_) { doSave2(det.title); }
                         });
                       } catch(_) {
@@ -635,7 +713,7 @@
                     || null;
                   // 直近のユーザ操作が無い場合は表示しない（ページロード/自動フォーカス対策）
                   if (!hasRecentUserGesture()) { return; }
-                  if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, detail); }
+                  if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, detail); }
                 }
               } catch(_) {}
             }
@@ -894,7 +972,7 @@
                       || null;
                     // 直近のユーザ操作が無い場合は表示しない
                     if (!hasRecentUserGesture()) { return; }
-                    if (!isPasskeyActiveNow()) { openPasskeyDialog(anchor, detail); }
+                    if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, detail); }
                   }
                 } catch(_) {}
               }
@@ -946,7 +1024,7 @@
                       || document.querySelector('input[type="password"]')
                       || document.querySelector('input')
                       || null;
-                    openPasskeyDialog(anchor, detail);
+                    if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, detail); }
                   }
                 } catch(_) {}
               }
@@ -1442,8 +1520,8 @@
     box.style.left = left + 'px';
   };
   const openSaveDialog = function(anchor, idText, pwText) {
-    // 直近にパスキーが発火している間だけ、従来ポップアップを抑止
-    try { if (isPasskeyActiveNow()) { return null; } } catch(_) {}
+    // パスキー環境では従来ポップアップを表示しない（最終ガード）
+    try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { return null; } } catch(_) {}
     const box = ensureFixedPopup(anchor);
     if (!box) return null;
     dialogOpen = true;
@@ -1602,6 +1680,7 @@
     try {
       try { console.info('[tsu] showPasskeyPopup called', { anchorExists: !!anchor }); } catch(_) {}
       const detail = extractPasskeyFromPage(document);
+      try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { showPasskeyCandidatePopup(anchor); return; } } catch(_) {}
       openPasskeyDialog(anchor, detail);
     } catch(_) {}
   }
@@ -1609,6 +1688,8 @@
   // パスキー候補一覧（rpIdで検索し、タイトルを表示）
   function showPasskeyCandidatePopup(anchor) {
     try {
+      // 従来のインラインポップアップを強制的に閉じて干渉を避ける
+      try { const oldBox = document.getElementById('tsupasswd-inline-popup'); if (oldBox) { oldBox.style.display = 'none'; } } catch(_) {}
       const doc = (anchor && anchor.ownerDocument) || document;
       let box = doc.getElementById('tsupasswd-passkey-list');
       if (!box) {
@@ -1649,22 +1730,52 @@
           const vh = window.innerHeight || 0;
           const bx = box.offsetWidth || 0;
           const by = box.offsetHeight || 0;
-          const baseTop = r ? (r.bottom + gap) : 32;
-          const baseLeft = r ? Math.min(r.left, vw - bx - 8) : 16;
-          const top = Math.min(Math.max(baseTop, 8), Math.max(8, vh - by - 8));
-          const left = Math.min(Math.max(baseLeft, 8), Math.max(8, vw - bx - 8));
+          let top = 32;
+          let left = 16;
+          if (r) {
+            // 横位置: アンカー左に合わせつつ画面内に収める
+            left = Math.min(Math.max(r.left, 8), Math.max(8, vw - bx - 8));
+            // 縦位置: 下配置が入るなら下、入らない場合は上に配置
+            const spaceBelow = (vh - r.bottom - gap);
+            const spaceAbove = (r.top - gap);
+            if (spaceBelow >= by || spaceBelow >= spaceAbove) {
+              top = Math.min(Math.max(r.bottom + gap, 8), Math.max(8, vh - by - 8));
+            } else {
+              top = Math.max(8, r.top - gap - by);
+              // 万一はみ出す場合は下配置にフォールバック
+              if (top > (vh - by - 8)) {
+                top = Math.min(Math.max(r.bottom + gap, 8), Math.max(8, vh - by - 8));
+              }
+            }
+          } else {
+            // アンカー不明時は左上寄りの既定位置
+            top = Math.min(Math.max(32, 8), Math.max(8, vh - by - 8));
+            left = Math.min(Math.max(16, 8), Math.max(8, vw - bx - 8));
+          }
           box.style.top = top + 'px';
           box.style.left = left + 'px';
         } catch(_) {}
       };
-      // 初期表示
-      try { box.innerHTML = '<div style="opacity:0.85;">検索中...</div>'; box.style.display = 'block'; place(); } catch(_) {}
-
-      // rpId を取得
+      // rpId を取得し正規化
       let rpId = '';
-      try { const rp = (window.tsupasswd && typeof window.tsupasswd.getRpInfo === 'function') ? window.tsupasswd.getRpInfo() : null; if (rp && rp.rpId) rpId = String(rp.rpId); } catch(_) {}
+      try {
+        const rp = (window.tsupasswd && typeof window.tsupasswd.getRpInfo === 'function') ? window.tsupasswd.getRpInfo() : null;
+        if (rp && rp.rpId) rpId = String(rp.rpId);
+      } catch(_) {}
       try { if (!rpId && location && location.hostname) rpId = String(location.hostname); } catch(_) {}
+      try { if (rpId) rpId = String(rpId).trim().toLowerCase().replace(/\.$/, ''); } catch(_) {}
       if (!rpId) { try { box.innerHTML = '<div style="opacity:0.85;">rpId が見つかりません</div>'; } catch(_) {} return box; }
+      // 直近と同一 rpId の呼び出しが短時間に連続した場合は検索を再実行しない
+      try {
+        const now = Date.now();
+        const lastRp = window.__tsu_last_pk_list_rp;
+        const lastTs = Number(window.__tsu_last_pk_list_ts || 0);
+        if (lastRp === rpId && (now - lastTs) < 800) { place(); return box; }
+        window.__tsu_last_pk_list_rp = rpId;
+        window.__tsu_last_pk_list_ts = now;
+      } catch(_) {}
+      // 初期表示（ここでのみ表示文言をセットし、レントラ時は上記で return 済み）
+      try { box.innerHTML = '<div style="opacity:0.85;">検索中...</div>'; box.style.display = 'block'; place(); } catch(_) {}
       try { console.info('[tsu] list search passkey q=', rpId); } catch(_) {}
 
       const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
@@ -1672,7 +1783,16 @@
       const buildRpCandidates = (rp) => {
         try {
           const out = [];
-          const parts = String(rp || '').split('.').filter(Boolean);
+          const base = String(rp || '').trim().toLowerCase().replace(/\.$/, '');
+          const parts = base.split('.').filter(Boolean);
+          // よくある汎用サブドメインを一段落とした候補も追加（www, m, account, login, app）
+          try {
+            const common = new Set(['www','m','account','login','app']);
+            if (parts.length >= 3 && common.has(parts[0])) {
+              const cand1 = parts.slice(1).join('.');
+              if (cand1 && cand1 !== base) out.push(cand1);
+            }
+          } catch(_) {}
           if (parts.length >= 2) {
             for (let k = 2; k <= parts.length; k++) {
               const cand = parts.slice(parts.length - k).join('.');
@@ -1684,9 +1804,9 @@
           }
           // 元の rpId を先頭に
           const uniq = [];
-          [String(rp || '')].concat(out).forEach(v => { if (v && !uniq.includes(v)) uniq.push(v); });
+          [base].concat(out.map(s => String(s).toLowerCase())).forEach(v => { if (v && !uniq.includes(v)) uniq.push(v); });
           return uniq;
-        } catch(_) { return [String(rp || '')]; }
+        } catch(_) { return [String(rp || '').trim().toLowerCase().replace(/\.$/, '')]; }
       };
       const parseEntries = (raw) => {
         try {
@@ -1699,37 +1819,139 @@
           return [];
         } catch(_) { return []; }
       };
-      const rps = buildRpCandidates(rpId);
+      // 段階的検索: 1) 完全一致 2) 結果0件ならサフィックス候補 3) それでも0件ならラベル由来のキーワード
+      const allCands = buildRpCandidates(rpId);
+      const exact = [String(rpId)].filter(Boolean);
+      const suffix = allCands.filter(c => String(c) !== String(rpId));
+      const labelKeywords = (() => {
+        try {
+          const base = String(rpId || '').trim().toLowerCase();
+          const parts = base.split('.').filter(Boolean);
+          const out = [];
+          // 最下位ラベル（例: webauthn.io -> 'webauthn'）
+          if (parts.length) out.push(parts[0]);
+          // 2ラベル結合（例: account.bandainamcoid.com -> 'bandainamcoid', 'account bandainamcoid'）
+          if (parts.length >= 2) {
+            out.push(parts[parts.length - 2]);
+            out.push(parts.slice(Math.max(0, parts.length - 2)).join(' '));
+          }
+          // 3ラベル結合（スペース区切り）
+          if (parts.length >= 3) out.push(parts.slice(Math.max(0, parts.length - 3)).join(' '));
+          // フィルタ: 4文字未満や一般TLDのみは除外
+          const bad = new Set(['com','net','org','jp','co','or','ne','ac','go','ed']);
+          const uniq = [];
+          out.map(s => String(s).trim().toLowerCase()).forEach(s => {
+            if (s && s.length >= 4 && !bad.has(s) && !uniq.includes(s)) uniq.push(s);
+          });
+          return uniq;
+        } catch(_) { return []; }
+      })();
       const merged = [];
       const seen = new Set();
+      let rendered = false;
       const addAll = (arr) => {
         try {
-          (arr || []).forEach(e => {
+          const a = Array.isArray(arr) ? arr : [];
+          try { console.info('[tsu] passkey search hits =', a.length); } catch(_) {}
+          const before = merged.length;
+          a.forEach(e => {
             try {
               const key = JSON.stringify({ id: e && e.id, title: e && (e.title||e.name||''), rp: e && (e.rp||e.rp_id||'') });
               if (!seen.has(key)) { seen.add(key); merged.push(e); }
             } catch(_) {}
           });
+          // 初回ヒット時に即時描画（後続ステージを待たずに UI を確定）
+          try {
+            if (!rendered && merged.length > 0 && before === 0) {
+              finalize(merged);
+            }
+          } catch(_) {}
         } catch(_) {}
       };
-      const runNext = () => {
+      const runStage = (list, next) => {
         try {
-          if (!rps.length) { finalize(merged); return; }
-          const q = rps.shift();
-          sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', q, '--json'] }, (resp) => {
-            try { addAll(parseEntries(resp && (resp.data || resp))); } catch(_) {}
-            runNext();
+          const qlist = Array.isArray(list) ? list.slice() : [];
+          const step = () => {
+            try {
+              if (!qlist.length) { next && next(); return; }
+              const q = String(qlist.shift() || '').trim().toLowerCase();
+              try { console.info('[tsu] passkey search (keyword) =', q); } catch(_) {}
+              let responded = false;
+              let timer = null;
+              try { timer = setTimeout(() => { if (!responded) { responded = true; try { console.info('[tsu] passkey search timeout, skip =', q); } catch(_) {} step(); } }, 1500); } catch(_) {}
+              sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', q, '--json'] }, (resp) => {
+                if (responded) return;
+                responded = true;
+                try { if (timer) clearTimeout(timer); } catch(_) {}
+                try { addAll(parseEntries(resp && (resp.data || resp))); } catch(_) {}
+                step();
+              });
+            } catch(_) { next && next(); }
+          };
+          step();
+        } catch(_) { next && next(); }
+      };
+      const runSearch = () => {
+        const isExactEntry = (e) => {
+          try {
+            const base = String(rpId || '').trim().toLowerCase();
+            const r = String((e && (e.rp || e.rp_id || '')) || '').trim().toLowerCase();
+            return !!(base && r && r === base);
+          } catch(_) { return false; }
+        };
+        // まずは直近保存キャッシュから即時候補を提示
+        try {
+          const recent = Array.isArray(window.__tsu_pk_recent_entries) ? window.__tsu_pk_recent_entries : [];
+          const recHits = recent.filter(e => {
+            try {
+              const r = String((e && (e.rp || e.rp_id || '')) || '').trim().toLowerCase();
+              return !!(r && (r === rpId || r.endsWith('.' + rpId) || rpId.endsWith('.' + r)));
+            } catch(_) { return false; }
+          }).map(e => ({ id: e.id || '', title: e.title || e.name || '', rp: e.rp || e.rp_id || '' }));
+          if (recHits.length) { addAll(recHits); finalize(merged); return; }
+        } catch(_) {}
+        runStage(exact, () => {
+          // 完全一致があればそれだけで確定
+          const exactOnly = merged.filter(isExactEntry);
+          if (exactOnly.length > 0) { finalize(exactOnly); return; }
+          runStage(suffix, () => {
+            // まだ0件ならラベルキーワードでも検索
+            if (merged.length === 0 && labelKeywords.length > 0) {
+              runStage(labelKeywords, () => finalize(merged));
+            } else {
+              finalize(merged);
+            }
           });
-        } catch(_) { finalize(merged); }
+        });
       };
       const finalize = (list) => {
+        if (rendered) return;
+        let entries = [];
+        try { entries = Array.isArray(list) ? list : []; } catch(_) { entries = []; }
+        // 並び順: 完全一致 > サフィックス一致 > その他
         try {
-          const entries = Array.isArray(list) ? list : [];
-          const header = ''
-            + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">'
-            +   '<div style="font-weight:600;">パスキー候補</div>'
-            +   '<button id="tsu-pk-close" aria-label="閉じる" title="閉じる" style="border:none;background:transparent;color:#e8eaed;font-size:16px;line-height:1;cursor:pointer;padding:2px 6px;">×</button>'
-            + '</div>';
+          const base = String(rpId || '').trim().toLowerCase();
+          const getRp = (e) => {
+            try { return String((e && (e.rp || e.rp_id || '')) || '').trim().toLowerCase(); } catch(_) { return ''; }
+          };
+          const score = (e) => {
+            try {
+              const r = getRp(e);
+              if (!r || !base) return 0;
+              if (r === base) return 200;
+              if (r.endsWith('.' + base)) return 120;
+              if (base.endsWith('.' + r)) return 40; // 広め一致
+              return 0;
+            } catch(_) { return 0; }
+          };
+          entries.sort((a,b) => score(b) - score(a));
+        } catch(_) {}
+        const header = ''
+          + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">'
+          +   '<div style="font-weight:600;">パスキー候補</div>'
+          +   '<button id="tsu-pk-close" aria-label="閉じる" title="閉じる" style="border:none;background:transparent;color:#e8eaed;font-size:16px;line-height:1;cursor:pointer;padding:2px 6px;">×</button>'
+          + '</div>';
+        try {
           if (!entries.length) {
             box.innerHTML = header + '<div style="opacity:0.85">該当するパスキーが見つかりません</div>';
           } else {
@@ -1797,68 +2019,59 @@
                     try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
                     try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
                     try { window.__tsu_pk_last_ts = Date.now(); } catch(_) {}
-                    // 1) よくあるボタン/リンクを探索してクリック（外部リンクは除外）
+                    // 直接認証情報を指定する（ページの get() フックが allowCredentials に反映）
                     try {
-                      const d = box.ownerDocument || document;
-                      const all = Array.prototype.slice.call(d.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"]'));
-                      const sameOrigin = (href) => {
+                      const idx = parseInt(node.getAttribute('data-idx') || '-1', 10);
+                      const e = (idx >= 0 && idx < entries.length) ? entries[idx] : null;
+                      const clickedTitle = e ? String(e.title || e.name || e.rp || e.rp_id || '') : '';
+                      const pickCredIdB64 = (o) => {
                         try {
-                          if (!href) return true; // 空や # は許可
-                          if (href.startsWith('#') || href.startsWith('javascript:')) return true;
-                          const u = new URL(href, location.href);
-                          return u.origin === location.origin;
-                        } catch(_) { return false; }
-                      };
-                      const candidates = all.filter((el) => {
-                        try {
-                          const tn = (el.tagName || '').toLowerCase();
-                          if (tn === 'a') {
-                            const href = el.getAttribute('href') || '';
-                            return sameOrigin(href);
+                          if (!o || typeof o !== 'object') return '';
+                          const cands = ['credential_id','credentialId','cred','raw_id','rawId','id'];
+                          for (const k of cands) {
+                            const v = o[k] != null ? o[k] : (o[k.toUpperCase ? k.toUpperCase() : k]);
+                            if (!v) continue;
+                            const s = String(v);
+                            if (s.length > 10) return s;
                           }
-                          return true; // button/input/[role=button]
-                        } catch(_) { return false; }
-                      });
-                      const kw = ['passkey','パスキー','webauthn','生体','security key','セキュリティキー'];
-                      const loginKw = ['login','sign in','signin','ログイン','サインイン'];
-                      const registerKw = ['register','sign up','signup','登録','新規','create','作成'];
-                      const score = (el) => {
-                        try {
-                          let s = 0;
-                          const tn = (el.tagName || '').toLowerCase();
-                          const tp = (el.type || '').toLowerCase();
-                          // ボタン系を強く優先
-                          if (tn === 'button' || tp === 'submit' || tp === 'button') s += 5;
-                          if ((el.getAttribute && el.getAttribute('role')) === 'button') s += 3;
-                          const txt = (el.innerText || el.textContent || '').toLowerCase();
-                          const labs = [el.getAttribute('aria-label'), el.getAttribute('title'), el.id, el.name, el.value].map(x => (x || '').toLowerCase());
-                          for (const k of kw) { if (txt.includes(k) || labs.some(v => v.includes(k))) s += 2; }
-                          // ログイン系ワードで加点、登録系ワードで減点
-                          if (loginKw.some(k => txt.includes(k) || labs.some(v => v.includes(k)))) s += 4;
-                          if (registerKw.some(k => txt.includes(k) || labs.some(v => v.includes(k)))) s -= 6;
-                          // 近傍にパスキー語がある場合も加点
-                          const near = el.closest && el.closest('label, div, span, form');
-                          const ntext = near ? (near.innerText || near.textContent || '').toLowerCase() : '';
-                          for (const k of kw) { if (ntext.includes(k)) s += 1; }
-                          // 近傍の文脈でもログイン/登録で重み付け
-                          if (loginKw.some(k => ntext.includes(k))) s += 2;
-                          if (registerKw.some(k => ntext.includes(k))) s -= 3;
-                          // form 内は少し加点
-                          if (el.closest && el.closest('form')) s += 1;
-                          return s;
-                        } catch(_) { return 0; }
+                          return '';
+                        } catch(_) { return ''; }
                       };
-                      const sorted = candidates.map(el => ({ el, s: score(el) })).filter(o => o.s > 0).sort((a,b) => b.s - a.s);
-                      if (sorted.length) {
-                        const target = sorted[0].el;
-                        try { target.click(); } catch(_) {}
+                      let credB64 = e ? pickCredIdB64(e) : '';
+                      const rpId = (location && location.hostname) ? String(location.hostname) : '';
+                      const setPref = (idb64) => {
+                        try { window.postMessage({ __tsu: true, type: 'tsu:setPreferredCredential', credentialIdB64: idb64 || '', rpId }, '*'); } catch(_) {}
+                      };
+                      if (!credB64) {
+                        // クリック後に詳細を再解決（CLI検索のエントリに credentialId が含まれていない場合があるため）
+                        try {
+                          const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+                          sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', rpId, '--json'] }, (resp) => {
+                            try {
+                              const list = parseEntries(resp && (resp.data || resp));
+                              const m = Array.isArray(list) ? list : [];
+                              // タイトル完全一致 > rp完全一致の先頭
+                              const exact = m.find((x) => {
+                                try { return String(x && (x.title || x.name || '')) === clickedTitle; } catch(_) { return false; }
+                              });
+                              const picked = exact || m.find((x) => {
+                                try { const r = String(x && (x.rp || x.rp_id || '')); return !!r && (r === rpId || r.endsWith('.'+rpId) || rpId.endsWith('.'+r)); } catch(_) { return false; }
+                              }) || null;
+                              const cid = picked ? pickCredIdB64(picked) : '';
+                              credB64 = cid || '';
+                            } catch(_) { credB64 = ''; }
+                            try { setPref(credB64); } catch(_) {}
+                            // 同期発火でユーザーアクティベーションを維持
+                            try { window.dispatchEvent(new CustomEvent('tsu:triggerPasskeyLoginSync', { detail: { rpId } })); } catch(_) {}
+                          });
+                        } catch(_) { try { setPref(''); } catch(_) {} }
                       } else {
-                        // 2) カスタムイベントでページ側へ依頼（サイト側がリスナで対応）
-                        try { window.dispatchEvent(new CustomEvent('tsu:triggerPasskeyLogin', { detail: {} })); } catch(_) {}
+                        setPref(credB64);
+                        // 同期発火でユーザーアクティベーションを維持
+                        try { window.dispatchEvent(new CustomEvent('tsu:triggerPasskeyLoginSync', { detail: { rpId } })); } catch(_) {}
                       }
-                    } catch(_) {
-                      try { window.dispatchEvent(new CustomEvent('tsu:triggerPasskeyLogin', { detail: {} })); } catch(_) {}
-                    }
+                    } catch(_) {}
+                    // trigger は injected 側で setPreferredCredential 受信後に自動スケジュール
                     // 最後に候補ポップアップを閉じる
                     try { if (box && box.parentNode) box.parentNode.removeChild(box); } catch(_) {}
                   }, { capture: true });
@@ -1866,16 +2079,40 @@
               });
             } catch(_) {}
           }
-          place();
-          // close
+          // 表示確定
+          try { box.style.display = 'block'; place(); } catch(_) {}
+        } catch(e) {
+          // 異常時でも検索中で止まらないようにフォールバック描画
+          try { box.innerHTML = '<div style="opacity:0.85;">候補の描画に失敗しました</div>'; box.style.display = 'block'; place(); } catch(_) {}
+        } finally {
+          rendered = true;
+          try { box.setAttribute('data-rendered', '1'); } catch(_) {}
+          // close ボタンバインドは最後に（可能なら）
           try {
             const closeBtn = box.querySelector('#tsu-pk-close');
             const onClose = (ev) => { try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {} try { if (box && box.parentNode) box.parentNode.removeChild(box); } catch(_) {} };
             if (closeBtn) { closeBtn.addEventListener('click', onClose, { once: true }); closeBtn.addEventListener('pointerdown', onClose, { once: true }); }
           } catch(_) {}
-        } catch(_) {}
+        }
       };
-      runNext();
+      // グローバルなフォールバック: 一定時間応答が無い場合でもレンダリングを完了
+      try {
+        setTimeout(() => { try { if (!rendered) finalize(merged); } catch(_) {} }, 2200);
+      } catch(_) {}
+      // DOM レベルのウォッチドッグ: data-rendered が付かない場合は強制的に表示文言を更新
+      try {
+        setTimeout(() => {
+          try {
+            const ok = box && box.getAttribute && box.getAttribute('data-rendered') === '1';
+            if (!ok && !rendered) {
+              try { finalize(merged); } catch(_) {}
+              // finalize が失敗した場合でもメッセージを更新
+              try { if (!rendered) { box.innerHTML = '<div style="opacity:0.85;">該当するパスキーが見つかりません</div>'; box.style.display = 'block'; place(); } } catch(_) {}
+            }
+          } catch(_) {}
+        }, 3000);
+      } catch(_) {}
+      runSearch();
       return box;
     } catch(_) { return null; }
   }
@@ -1883,6 +2120,17 @@
   // パスキー利用可否（キーワード判定）
   function isPasskeyCapable() {
     try {
+      // 既に判定済みならそれを返す（多重呼び出しの無駄とログ連発を抑止）
+      try {
+        if (typeof window.__tsu_passkey_capable === 'boolean') {
+          // ログは初回のみ
+          if (!window.__tsu_pk_capability_logged) {
+            try { console.info('[tsu] passkey capability(keyword)', { found: !!window.__tsu_passkey_capable }); } catch(_) {}
+            try { window.__tsu_pk_capability_logged = true; } catch(_) {}
+          }
+          return Promise.resolve(!!window.__tsu_passkey_capable);
+        }
+      } catch(_) {}
       const parts = [];
       try { if (document && document.title) parts.push(String(document.title)); } catch(_) {}
       try { if (document && document.body && document.body.innerText) parts.push(String(document.body.innerText)); } catch(_) {}
@@ -1907,12 +2155,19 @@
       const found = patterns.some((re) => {
         try { return re.test(haystack); } catch(_) { return false; }
       });
-      try { console.info('[tsu] passkey capability(keyword)', { found }); } catch(_) {}
+      // 判定結果をキャッシュし、ログは初回のみ
+      try { window.__tsu_passkey_capable = !!found; } catch(_) {}
+      try {
+        if (!window.__tsu_pk_capability_logged) {
+          console.info('[tsu] passkey capability(keyword)', { found });
+          window.__tsu_pk_capability_logged = true;
+        }
+      } catch(_) {}
       return Promise.resolve(!!found);
     } catch(_) { return Promise.resolve(false); }
   }
 
-  const presentAuthPopup = function(anchor) {
+  let presentAuthPopup = function(anchor) {
     try {
       // パスキー環境では従来ポップアップを出さず、候補一覧のみ表示
       try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(anchor); } catch(_) {} return null; } } catch(_) {}
@@ -2230,7 +2485,7 @@
             try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
             // パスキー有効時はクリックでも表示しない（チラつき防止）
             try {
-              if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
+              if (isPasskeyActiveNow()) {
                 try { hidePopup(true); } catch(_) {}
                 try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
                 return;
@@ -2241,6 +2496,8 @@
               if (f && f.__tsuBound) return;
               if (f) f.__tsuBound = true;
             } catch(_) { return; }
+            // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(user)); } catch(_) {} return; } } catch(_) {}
             const b = presentAuthPopup(pickPreferredAnchor(user)); attachBoxClick(b);
           };
           user.addEventListener('pointerdown', showOnClick, true);
@@ -2251,8 +2508,8 @@
         if (!pass.__tsuBound) {
           const showOnClickP = function(){
             if (dialogOpen) return;
-            // パスキー環境では従来ポップアップを出さない
-            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+            // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
+            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(pass)); } catch(_) {} return; } } catch(_) {}
             // パスキー有効時はクリックでも表示しない
             try {
               if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
@@ -2283,11 +2540,11 @@
             if (uEl.__tsuBound) continue;
             const showOnClickU = function(){
               if (dialogOpen) return;
-              // パスキー環境では従来ポップアップを出さない
-              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+              // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
+              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(uEl)); } catch(_) {} return; } } catch(_) {}
               // パスキー有効時はクリックでも表示しない
               try {
-                if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
+                if (isPasskeyActiveNow()) {
                   try { hidePopup(true); } catch(_) {}
                   try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
                   return;
@@ -2307,8 +2564,8 @@
             if (pEl.__tsuBound) continue;
             const showOnClickOnlyP = function(){
               if (dialogOpen) return;
-              // パスキー環境では従来ポップアップを出さない
-              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
+              // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
+              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(pEl)); } catch(_) {} return; } } catch(_) {}
               // パスキー有効時はクリックでも表示しない
               try {
                 if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
@@ -2384,11 +2641,19 @@
               }
             }
             // hasAuthInputs は presentAuthPopup 側でガードするためここでは不要
-            // ここからは表示トリガ。抑止中/直後は新規表示を抑える
+            // 優先アンカーを決定し、まずパスキー環境なら必ず候補ポップを表示（抑止ガードより先に評価）
+            const pref = pickPreferredAnchor(el);
+            try {
+              if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
+                try { window.__tsu_current_anchor = pref; } catch(_) {}
+                try { showPasskeyCandidatePopup(pref); } catch(_) {}
+                return;
+              }
+            } catch(_) {}
+            // ここからは従来ポップアップ向けの抑止ガード
             // パスキー非発火時は suppress を解除して、クリックでも確実に表示できるようにする
             try { if (!isPasskeyActiveNow()) { window.__tsu_suppress_until = 0; } } catch(_) {}
             try { if ((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)) return; } catch(_) {}
-            const pref = pickPreferredAnchor(el);
             // 既に表示中かつロック中は、別要素（非優先アンカー）からのイベントを無視して揺れを防ぐ
             try {
               if (window.__tsu_current_anchor && window.__tsu_current_anchor !== pref) {
@@ -2396,10 +2661,6 @@
                 window.__tsu_current_anchor = pref;
               }
             } catch(_) {}
-            // 直近パスキー発火時のみクリック表示を抑止
-            try { if (isPasskeyActiveNow()) return; } catch(_) {}
-            // パスキー環境では従来ポップアップを出さず、候補一覧を即表示
-            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pref); } catch(_) {} return; } } catch(_) {}
             const b = presentAuthPopup(pref);
             attachBoxClick(b);
           } catch(_) {}
@@ -2413,16 +2674,16 @@
                 if (!shown) { dialogOpen = false; } else { return; }
               } catch(_) { return; }
             }
-            // 直近パスキー発火時はフォーカス表示を抑止（チラつき防止）
+            // 直近パスキー発火時は従来ポップアップを抑止するが、候補一覧の表示は許可する（チラつきは抑止フラグで対応）
             try {
               if (isPasskeyActiveNow()) {
                 try { hidePopup(true); } catch(_) {}
-                try { window.__tsu_suppress_until = Date.now() + 3000; } catch(_) {}
-                return;
+                try { window.__tsu_suppress_until = Date.now() + 1200; } catch(_) {}
+              } else {
+                // 抑止フラグを解除（再フォーカスで確実に表示）
+                try { window.__tsu_suppress_until = 0; } catch(_) {}
               }
             } catch(_) {}
-            // 抑止フラグを無条件で解除（再フォーカスで確実に表示）
-            try { window.__tsu_suppress_until = 0; } catch(_) {}
             const path = (e.composedPath && e.composedPath()) || [];
             const t = (path && path.length ? path[0] : e.target);
             const el = (t && t.nodeType === 1)
@@ -2433,22 +2694,27 @@
             if (!el) return;
             const userLikeEl = !!(el && (isUserLike(el) || (isUsernameOnlyAllowedContext() && isTextboxLike(el))));
             const passLikeEl = !!(el && isPassLike(el));
-            if (!(el && (userLikeEl || passLikeEl))) return;
-            // ここからは表示トリガ。抑止中/直後は新規表示を抑える（ただしパスワード欄はバイパス）
+            // パスキー環境では一般のテキスト入力でも候補を許可
+            if (!(el && (userLikeEl || passLikeEl)) && !(isPasskeyEnvOn() || isPasskeyActiveNow())) return;
+            const pref = pickPreferredAnchor(el);
+            // まずパスキー環境なら抑止ガードより先に候補一覧を必ず表示
+            try {
+              if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
+                try { window.__tsu_current_anchor = pref; } catch(_) {}
+                try { showPasskeyCandidatePopup(pref); } catch(_) {}
+                return;
+              }
+            } catch(_) {}
+            // ここからは従来ポップアップ向けの抑止ガード（パスワード欄はバイパス）
             {
               let guarded = false;
               try { guarded = !!((window.__tsu_suppress_until && Date.now() < window.__tsu_suppress_until) || (window.__tsu_last_hidden_at && (Date.now() - window.__tsu_last_hidden_at) < 1500)); } catch(_) {}
               if (guarded && !passLikeEl) return;
             }
-            const pref = pickPreferredAnchor(el);
             // 現在アンカーを無条件に更新
             try { window.__tsu_current_anchor = pref; } catch(_) {}
-            // パスキー環境では従来ポップアップを出さない
-            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) return; } catch(_) {}
             const b = presentAuthPopup(pref);
             attachBoxClick(b);
-            // パスキー有効時はフォーカスで即一覧表示（タイトルを並べる）
-            try { isPasskeyCapable().then((ok) => { try { if (ok) showPasskeyCandidatePopup(pref); } catch(_) {} }); } catch(_) {}
           } catch(_) {}
         };
         document.addEventListener('click', onClickIn, true);
