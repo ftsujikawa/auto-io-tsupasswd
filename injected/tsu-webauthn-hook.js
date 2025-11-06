@@ -1,8 +1,70 @@
 ;(function () {
   try {
+    // 早期return前にAPIスタブを常時公開（既にフック済みでも利用可能にする）
+    const __publishACB = (fn) => {
+      try { if (typeof window !== 'undefined') window.__tsu_allowConditionalBrief = fn; } catch(_) {}
+      try { if (typeof self !== 'undefined') self.__tsu_allowConditionalBrief = fn; } catch(_) {}
+      try { if (typeof globalThis !== 'undefined') globalThis.__tsu_allowConditionalBrief = fn; } catch(_) {}
+      try { if (window && window.top && window.top !== window) { try { window.top.__tsu_allowConditionalBrief = fn; } catch(_) {} } } catch(_) {}
+    };
+    try {
+      if (typeof window.__tsu_allowConditionalBrief !== 'function') {
+        const __acb = function(ms){
+          try {
+            const d = Math.max(0, Number(ms || 2500));
+            window.__tsu_cond_ok_until = Date.now() + d;
+            try { console.info('[tsu] injected: conditional allow window set', { ms: d }); } catch(_) {}
+          } catch(_) {}
+        };
+        __publishACB(__acb);
+      }
+    } catch(_) {}
+    // コンソールが別の実行ワールドでも操作できるよう postMessage で制御可能にする
+    try {
+      if (!window.__tsu_msg_handler_installed) {
+        window.__tsu_msg_handler_installed = true;
+        window.addEventListener('message', (ev) => {
+          try {
+            if (!ev || ev.source !== window) return;
+            const d = ev.data || {};
+            if (!d || d.__tsu !== true) return;
+            if (d.cmd === 'allowConditional') {
+              try {
+                const ms = Math.max(0, Number(d.ms || 2500));
+                window.__tsu_cond_ok_until = Date.now() + ms;
+                try { console.info('[tsu] injected: conditional allow window set (msg)', { ms }); } catch(_) {}
+              } catch(_) {}
+              return;
+            }
+            if (d.cmd === 'setAuto') {
+              try {
+                const v = !!d.on;
+                if (typeof window.__tsu_setAutoEnabled === 'function') {
+                  window.__tsu_setAutoEnabled(v);
+                } else {
+                  window.__tsu_auto_enabled = v;
+                  try { console.info('[tsu] injected: autoEnabled =', v, '(msg-direct)'); } catch(_) {}
+                }
+              } catch(_) {}
+              return;
+            }
+            if (d.cmd === 'oneShotRecover') {
+              try {
+                const ms = Math.max(1000, Number(d.ms || 4000));
+                if (typeof window.__tsu_oneShotRecover === 'function') {
+                  window.__tsu_oneShotRecover(ms);
+                }
+              } catch(_) {}
+              return;
+            }
+          } catch(_) {}
+        });
+      }
+    } catch(_) {}
     if (window.__tsu_webauthn_page_hooked || !navigator || !navigator.credentials) return;
     window.__tsu_webauthn_page_hooked = true;
     window.__tsu_pk_cache = window.__tsu_pk_cache || {};
+    try { if (!Array.isArray(window.__tsu_pk_cache.postLogs)) window.__tsu_pk_cache.postLogs = []; } catch(_) {}
 
     const b64u = (buf) => {
       try {
@@ -15,17 +77,470 @@
       }
     };
 
+  // 条件付きUIの不要表示を抑止するための許可ウィンドウ管理
+  try {
+    if (typeof window.__tsu_cond_ok_until !== 'number') window.__tsu_cond_ok_until = 0;
+  } catch(_) {}
+  function isTextLike(el) {
+    try {
+      if (!el) return false;
+      const tn = (el.tagName || '').toLowerCase();
+      if (tn === 'textarea') return true;
+      if (tn === 'input') {
+        const tp = (el.type || '').toLowerCase();
+        return !tp || tp === 'text' || tp === 'email' || tp === 'search' || tp === 'url' || tp === 'password';
+      }
+      if (el.isContentEditable) return true;
+    } catch(_) {}
+    return false;
+  }
+  function allowConditionalBrief(ms) {
+    try {
+      const d = Math.max(0, Number(ms || 2500));
+      const till = Date.now() + d;
+      window.__tsu_cond_ok_until = till;
+      try { console.info('[tsu] injected: conditional allow window set', { ms: d }); } catch(_) {}
+    } catch(_) {}
+  }
+  // ユーザーがテキスト入力にフォーカスした際のみ、短時間だけ条件付きUIを許可
+  try {
+    document.addEventListener('focusin', (ev) => {
+      try {
+        const t = ev && ev.target;
+        function nudgeConditionalUI() {
+      try { if (!autoEnabled()) { return; } } catch(_) {}
+      try { if (inBootQuiet()) { console.info('[tsu] injected: skip conditional UI nudge (boot quiet)'); return; } } catch(_) {}
+      try {
+        // focus/click/input で条件付きUIを促す
+        const ae = document.activeElement;
+        if (isTextLike(ae)) {
+          if (inBootQuiet()) { try { console.info('[tsu] injected: skip allow window (boot quiet)'); } catch(_) {} return; }
+          allowConditionalBrief(2500);
+        }
+      } catch(_) {}
+    }
+    if (isTextLike(t)) {
+      nudgeConditionalUI();
+    }
+      } catch(_) {}
+    }, true);
+  } catch(_) {}
+  try { __publishACB(allowConditionalBrief); } catch(_) {}
+
+  // ワンショット復旧API
+  try {
+    window.__tsu_oneShotRecover = async function(ms) {
+      try {
+        const allowMs = Math.max(1000, Number(ms || 4000));
+        // 明示ON
+        try { window.__tsu_auto_enabled = true; } catch(_) {}
+        // 当方扱い＋キャンセルガードON
+        try { window.__tsu_pk_ours = true; } catch(_) {}
+        try { window.__tsu_cancel_guard_on = true; } catch(_) {}
+        // 許可ウィンドウ確保
+        try { window.__tsu_cond_ok_until = Date.now() + allowMs; console.info('[tsu] injected: oneShot allow window', { ms: allowMs }); } catch(_) {}
+        // guarded ESC（可能なら）
+        try { if (typeof window.__tsu_guardedEsc === 'function') await window.__tsu_guardedEsc(); } catch(_) {}
+        // 微待機してから強行テイクオーバー
+        await new Promise(r => setTimeout(r, 120));
+        try { if (typeof window.__tsu_startHardTakeover === 'function') await window.__tsu_startHardTakeover('oneShot', true); } catch(_) {}
+      } catch(_) {}
+      finally {
+        try { setTimeout(() => { try { window.__tsu_cancel_guard_on = false; window.__tsu_pk_ours = false; console.info('[tsu] injected: oneShot guard released'); } catch(_) {} }, 5000); } catch(_) {}
+      }
+    };
+  } catch(_) {}
+
+  // マスター自動挙動スイッチ（初期OFF）
+  try { if (typeof window.__tsu_auto_enabled === 'undefined') window.__tsu_auto_enabled = false; } catch(_) {}
+  function autoEnabled() {
+    try { return window.__tsu_auto_enabled === true; } catch(_) { return false; }
+  }
+  try {
+    if (typeof window.__tsu_auto_enabled_prev === 'undefined') window.__tsu_auto_enabled_prev = window.__tsu_auto_enabled;
+    if (typeof window.__tsu_auto_log_ts === 'undefined') window.__tsu_auto_log_ts = 0;
+  } catch(_) {}
+  try {
+    window.__tsu_setAutoEnabled = (on) => {
+      try {
+        const v = !!on;
+        const prev = !!window.__tsu_auto_enabled_prev;
+        window.__tsu_auto_enabled = v;
+        const now = Date.now();
+        const shouldLog = (v !== prev) || (now - (window.__tsu_auto_log_ts || 0) > 5000);
+        if (shouldLog) {
+          window.__tsu_auto_log_ts = now;
+          window.__tsu_auto_enabled_prev = v;
+          console.info('[tsu] injected: autoEnabled =', v);
+        }
+      } catch(_) {}
+    };
+  } catch(_) {}
+
+  // 初期状態では ESC 系の解雇は無効（リロード直後の誤発火抑止）
+  try { if (typeof window.__tsu_pk_no_esc_dismiss === 'undefined') window.__tsu_pk_no_esc_dismiss = true; } catch(_) {}
+  // リロード直後の静穏期間（条件付きUI/ESC/テイクオーバーを完全抑止）
+  try { if (!window.__tsu_boot_quiet_until) window.__tsu_boot_quiet_until = Date.now() + 3500; } catch(_) {}
+  function inBootQuiet() {
+    try { const t = Number(window.__tsu_boot_quiet_until || 0); return !!t && Date.now() < t; } catch(_) { return false; }
+  }
+ // 条件付きUIを明示的に閉じるナッジ（Esc）
+    function dismissConditionalUI(force) {
+      try {
+        try { if (!autoEnabled()) { return; } } catch(_) {}
+        try { if (inBootQuiet() && force !== true) { console.info('[tsu] injected: ESC dismiss skipped (boot quiet)'); return; } } catch(_) {}
+        try {
+          if (window.__tsu_pk_no_esc_dismiss === true && force !== true) {
+            console.info('[tsu] injected: ESC dismiss skipped by flag');
+            return;
+          }
+        } catch(_) {}
+        const w = window;
+        const d = document;
+        const mk = (type) => { try { return new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }); } catch(_) { return null; } };
+        // window/document へ先に送出
+        try { if (w && w.dispatchEvent) { const e1 = mk('keydown'); const e2 = mk('keyup'); e1 && w.dispatchEvent(e1); e2 && w.dispatchEvent(e2); } } catch(_) {}
+        try { if (d && d.dispatchEvent) { const e1 = mk('keydown'); const e2 = mk('keyup'); e1 && d.dispatchEvent(e1); e2 && d.dispatchEvent(e2); } } catch(_) {}
+        // activeElement がテキスト系なら限定的に送出
+        try {
+          const a = d.activeElement;
+          const isTextInput = (el) => { try { if (!el || !(el instanceof HTMLElement)) return false; const tag = (el.tagName||'').toLowerCase(); if (tag === 'input') { const t = (el.getAttribute('type')||'text').toLowerCase(); return ['text','email','search','url','tel','password'].includes(t); } return tag === 'textarea' || el.isContentEditable === true; } catch(_) { return false; } };
+          try { if (a && typeof a.blur === 'function') a.blur(); } catch(_) {}
+          if (a && a.dispatchEvent && isTextInput(a)) { const e1 = mk('keydown'); const e2 = mk('keyup'); e1 && a.dispatchEvent(e1); e2 && a.dispatchEvent(e2); }
+        } catch(_) {}
+        try { console.info('[tsu] injected: conditional UI dismiss ESC applied'); } catch(_) {}
+      } catch(_) {}
+    }
+
+    // ガード付きESC（ESC送出前後に一時的に error リスナーをキャプチャ登録し、ホスト側の例外を抑止）
+    async function guardedEscOnce() {
+      try {
+        try { if (window.__tsu_allow_guarded_esc !== true) { console.info('[tsu] injected: guarded ESC disabled'); return false; } } catch(_) {}
+        try { if (!autoEnabled()) { return false; } } catch(_) {}
+        try { if (inBootQuiet()) { return false; } } catch(_) {}
+        try {
+          // 許可ウィンドウ外かつ prefer_fallback でない場合は ESC を行わない
+          if (window.__tsu_pk_no_esc_dismiss === true && window.__tsu_pk_prefer_fallback !== true) {
+            console.info('[tsu] injected: guarded ESC skip (policy)');
+            return false;
+          }
+          if (typeof conditionalAllowedNow === 'function') {
+            const allowed = conditionalAllowedNow();
+            if (!allowed && window.__tsu_pk_prefer_fallback !== true) {
+              console.info('[tsu] injected: guarded ESC skip (not allowed)');
+              return false;
+            }
+          }
+        } catch(_) {}
+        try {
+          if (window.__tsu_guarded_esc_active) { console.info('[tsu] injected: guarded ESC skip (active)'); return false; }
+          const last = Number(window.__tsu_guarded_esc_last_ts || 0);
+          if (last && (Date.now() - last) < 1500) { return false; }
+          window.__tsu_guarded_esc_active = true; window.__tsu_guarded_esc_last_ts = Date.now();
+        } catch(_) {}
+        let removed = false;
+        const handler = (ev) => {
+          try {
+            const msg = (ev && ev.message) || '';
+            const src = (ev && ev.filename) || '';
+            // s2k-listener の match 例外などを抑止
+            if (/match/.test(String(msg)) || /s2k-listener\.js/.test(String(src||''))) {
+              try { ev.preventDefault && ev.preventDefault(); } catch(_) {}
+              try { ev.stopImmediatePropagation && ev.stopImmediatePropagation(); } catch(_) {}
+              return true;
+            }
+          } catch(_) {}
+          return false;
+        };
+        const rejHandler = (ev) => {
+          try {
+            const r = ev && ev.reason;
+            const msg = (r && (r.message || r.toString && r.toString())) || '';
+            if (/match/.test(String(msg)) || /s2k-listener\.js/.test(String(msg||''))) {
+              try { ev.preventDefault && ev.preventDefault(); } catch(_) {}
+              try { ev.stopImmediatePropagation && ev.stopImmediatePropagation(); } catch(_) {}
+              return true;
+            }
+          } catch(_) {}
+          return false;
+        };
+        try { window.addEventListener('error', handler, true); } catch(_) {}
+        try { window.addEventListener('unhandledrejection', rejHandler, true); } catch(_) {}
+        // window.onerror を一時的に上書きしてコンソールへの未捕捉を抑止
+        let restored = false; let prevOnError = null;
+        try { prevOnError = window.onerror; window.onerror = function(){ return true; }; } catch(_) {}
+        // ESC を2回、120ms間隔で送出（active要素へのキー送出は抑制済み実装）
+        try { dismissConditionalUI(true); } catch(_) {}
+        try { setTimeout(() => { try { dismissConditionalUI(true); } catch(_) {} }, 120); } catch(_) {}
+        // 監視ウィンドウを延長してホスト側例外の未捕捉を抑止
+        await new Promise(r => setTimeout(r, 1000));
+        if (!removed) {
+          try { window.removeEventListener('error', handler, true); } catch(_) {}
+          try { window.removeEventListener('unhandledrejection', rejHandler, true); } catch(_) {}
+          removed = true;
+        }
+        try { if (!restored) { window.onerror = prevOnError; restored = true; } } catch(_) {}
+        try { console.info('[tsu] injected: guarded ESC applied'); } catch(_) {}
+        return true;
+      } catch(_) { return false; }
+      finally { try { window.__tsu_guarded_esc_active = false; } catch(_) {} }
+    }
+    try { window.__tsu_guardedEsc = guardedEscOnce; } catch(_) {}
+
+    // ハードテイクオーバー: サイトの in-flight 固着時に当方の get() を直接起動
+    async function startHardTakeover(reason, force) {
+      try {
+        try { if (!autoEnabled()) { return false; } } catch(_) {}
+        try { if (inBootQuiet() && window.__tsu_pk_prefer_fallback !== true) { console.info('[tsu] injected: takeover skip (boot quiet)'); return false; } } catch(_) {}
+        try {
+          if (!conditionalAllowedNow() && window.__tsu_pk_prefer_fallback !== true) {
+            console.info('[tsu] injected: takeover skip (not allowed)');
+            return false;
+          }
+        } catch(_) {}
+        // フラグセット（strict保護/所有化）
+        try { if (window.__tsu_disable_prefer_fallback === true) { console.info('[tsu] injected: prefer_fallback auto-enable skipped by flag'); } else { window.__tsu_pk_prefer_fallback = true; } } catch(_) {}
+        try { window.__tsu_pk_takeover = true; window.__tsu_pk_ours = true; if (!window.__tsu_pk_force_strict_ts) window.__tsu_pk_force_strict_ts = Date.now(); } catch(_) {}
+        // prefer_fallback期間はエラーシールドを有効化
+        try { if (typeof installErrorShield === 'function') installErrorShield(); } catch(_) {}
+        try { if (window.__tsu_disable_conditional_fake === true) { console.info('[tsu] injected: conditional availability disable skipped by flag'); } else { ensureDisableConditionalAvail(); } } catch(_) {}
+        try { installErrorShield(); } catch(_) {}
+        // 既に get が進行中なら衝突を避けるため待機し、解消しない場合は後で再試行
+        try {
+          if (window.__tsu_pk_get_inflight) {
+            const start = Date.now();
+            const cap = 5000;
+            while (window.__tsu_pk_get_inflight && (Date.now() - start) < cap) { await new Promise(r => setTimeout(r, 50)); }
+            if (window.__tsu_pk_get_inflight) {
+              console.info('[tsu] injected: hard takeover deferred due to inflight');
+              // prefer_fallback 中で inflight が長時間継続する場合はフラグを強制解除してループを断つ
+              try {
+                const since = Number(window.__tsu_pk_inflight_since || 0);
+                const age = since ? (Date.now() - since) : 0;
+                if (window.__tsu_pk_prefer_fallback === true && age > 3500) {
+                  console.info('[tsu] injected: inflight force-clear due to prefer_fallback age', { ageMs: age });
+                  try { window.__tsu_pk_get_inflight = false; } catch(_) {}
+                  try {
+                    window.__tsu_cancel_guard_on = true;
+                    setTimeout(() => { try { window.__tsu_cancel_guard_on = false; } catch(_) {} }, 3000);
+                  } catch(_) {}
+                }
+              } catch(_) {}
+              try {
+                const cnt = Number(window.__tsu_pk_takeover_defer_count || 0) + 1;
+                window.__tsu_pk_takeover_defer_count = cnt;
+                // 2回以上連続で defer したら、ガード付きESCを一度だけ送出して pending を崩す
+                if (cnt >= 2) {
+                  try {
+                    if (!window.__tsu_guarded_esc_active) { await guardedEscOnce(); }
+                  } catch(_) {}
+                  try { window.__tsu_pk_takeover_defer_count = 0; } catch(_) {}
+                  // ESC後、inflight=false を確認してから一度だけ起動（80ms間隔で最大2.5sチェック）。進捗ログを出す。
+                  try {
+                    const start2 = Date.now();
+                    let fired = false;
+                    let lastLog = 0;
+                    try { console.info('[tsu] injected: post-guard inflight monitor start'); } catch(_) {}
+                    const mini = () => {
+                      try {
+                        if (fired) return;
+                        const elapsed = Date.now() - start2;
+                        if (elapsed > 2500) {
+                          try { console.info('[tsu] injected: post-guard inflight monitor give up (still inflight)'); } catch(_) {}
+        try { queueMicrotask(() => { try { startHardTakeover('monitor-giveup', true); } catch(_) {} }); } catch(_) {}
+                          // 最後に一度だけ試行してエラー/状態を可視化
+                          fired = true;
+                          startHardTakeover(reason+'-retry-esc-late');
+                          return;
+                        }
+                        if (window.__tsu_pk_get_inflight) {
+                          if (!lastLog || (elapsed - lastLog) > 320) { try { console.info('[tsu] injected: inflight still true', { elapsedMs: elapsed }); } catch(_) {} lastLog = elapsed; }
+                          setTimeout(mini, 80); return;
+                        }
+                        fired = true;
+                        startHardTakeover(reason+'-retry-esc');
+                      } catch(_) {}
+                    };
+                    mini();
+                  } catch(_) {}
+                  return false;
+                }
+                // 代替: 待機時間を延ばし、バックオフにジッタを追加
+                const base = 900;
+                const jitter = Math.floor(Math.random() * 500);
+                setTimeout(() => { try { startHardTakeover(reason+'-retry'); } catch(_) {} }, base + jitter);
+              } catch(_) {}
+              return false;
+            }
+          }
+        } catch(_) {}
+        // 直近 options/publicKey を確保
+        const lastOpts = window.__tsu_pk_last_options;
+        const lastPub = window.__tsu_pk_last_pubkey;
+        let opts = lastOpts ? Object.assign({}, lastOpts) : (lastPub ? { publicKey: lastPub } : null);
+        if (!opts || !opts.publicKey) {
+          try { console.info('[tsu] injected: hard takeover aborted (no last options/publicKey)', { reason }); } catch(_) {}
+          return false;
+        }
+        // mediation を required に強制
+        try { opts.mediation = 'required'; } catch(_) {}
+        // 実行
+        try { console.info('[tsu] injected: hard takeover get start', { reason }); } catch(_) {}
+        const cred = await navigator.credentials.get(opts);
+        try { console.info('[tsu] injected: hard takeover get resolved'); } catch(_) {}
+        return !!cred;
+      } catch(e) {
+        try { console.warn('[tsu] injected: hard takeover get error', e && e.name, e && e.message); } catch(_) {}
+        return false;
+      } finally { try { window.__tsu_pk_takeover = false; } catch(_) {} }
+    }
+    try { window.__tsu_startHardTakeover = startHardTakeover; } catch(_) {}
+
     const origCreate = navigator.credentials.create.bind(navigator.credentials);
     const origGet = navigator.credentials.get.bind(navigator.credentials);
     const post = (cache) => {
       try { window.postMessage({ __tsu: true, type: 'tsu:passkeyCaptured', cache }, '*'); } catch (_) {}
     };
 
+    // prefer_fallback 中の恒久エラーシールド（s2k-listener系の例外を抑止）
+    function installErrorShield() {
+      try {
+        if (window.__tsu_err_shield_on) return;
+        const errH = (ev) => {
+          try {
+            const msg = (ev && ev.message) || '';
+            const src = (ev && ev.filename) || '';
+            if (/match/.test(String(msg)) || /s2k-listener\.js/.test(String(src||''))) {
+              try { ev.preventDefault && ev.preventDefault(); } catch(_) {}
+              try { ev.stopImmediatePropagation && ev.stopImmediatePropagation(); } catch(_) {}
+              return true;
+            }
+          } catch(_) {}
+          return false;
+        };
+        const rejH = (ev) => {
+          try {
+            const r = ev && ev.reason;
+            const msg = (r && (r.message || (r.toString && r.toString()))) || '';
+            if (/match/.test(String(msg)) || /s2k-listener\.js/.test(String(msg||''))) {
+              try { ev.preventDefault && ev.preventDefault(); } catch(_) {}
+              try { ev.stopImmediatePropagation && ev.stopImmediatePropagation(); } catch(_) {}
+              return true;
+            }
+          } catch(_) {}
+          return false;
+        };
+        window.addEventListener('error', errH, true);
+        try { document.addEventListener('error', errH, true); } catch(_) {}
+        window.addEventListener('unhandledrejection', rejH, true);
+        window.__tsu_err_shield_on = true;
+        window.__tsu_err_shield_errH = errH;
+        window.__tsu_err_shield_rejH = rejH;
+        // window.onerror を prefer_fallback 中は抑止へ（復元用に保存）
+        try { window.__tsu_err_prev_onerror = window.onerror; window.onerror = function(){ return true; }; } catch(_) {}
+        try { console.info('[tsu] injected: global error shield installed'); } catch(_) {}
+      } catch(_) {}
+    }
+    function uninstallErrorShield() {
+      try {
+        if (!window.__tsu_err_shield_on) return;
+        const errH = window.__tsu_err_shield_errH;
+        const rejH = window.__tsu_err_shield_rejH;
+        try { errH && window.removeEventListener('error', errH, true); } catch(_) {}
+        try { errH && document.removeEventListener('error', errH, true); } catch(_) {}
+        try { rejH && window.removeEventListener('unhandledrejection', rejH, true); } catch(_) {}
+        window.__tsu_err_shield_on = false;
+        window.__tsu_err_shield_errH = null;
+        window.__tsu_err_shield_rejH = null;
+        try { const prev = window.__tsu_err_prev_onerror; window.onerror = prev || null; window.__tsu_err_prev_onerror = null; } catch(_) {}
+        try { console.info('[tsu] injected: global error shield removed'); } catch(_) {}
+      } catch(_) {}
+    }
+
+    // 簡易トースト表示（アサーション送信検知の可視化）
+    function showTsuToast(message) {
+      try {
+        const id = '__tsu_toast';
+        let box = document.getElementById(id);
+        if (!box) {
+          box = document.createElement('div');
+          box.id = id;
+          box.style.position = 'fixed';
+          box.style.top = '12px';
+          box.style.right = '12px';
+          box.style.zIndex = '2147483647';
+          box.style.fontFamily = 'system-ui, sans-serif';
+          document.documentElement.appendChild(box);
+        }
+        const item = document.createElement('div');
+        item.textContent = message;
+        item.style.background = 'rgba(0,0,0,0.8)';
+        item.style.color = '#fff';
+        item.style.padding = '8px 10px';
+        item.style.marginTop = '6px';
+        item.style.borderRadius = '6px';
+        item.style.fontSize = '12px';
+        item.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+        box.appendChild(item);
+        setTimeout(() => { try { item.remove(); if (!box.childElementCount) box.remove(); } catch(_) {} }, 2500);
+      } catch(_) {}
+    }
+
+    // 直近送信アサーションのメタ確認API
+    try {
+      window.__tsu_getLastAssertionMeta = function() { try { return (window.__tsu_pk_cache && window.__tsu_pk_cache.lastSentAssertionMeta) || null; } catch(_) { return null; } };
+    } catch(_) {}
+    // POST観測ログAPI
+    try {
+      window.__tsu_getPostLog = function(){ try { return (window.__tsu_pk_cache && window.__tsu_pk_cache.postLogs) || []; } catch(_) { return []; } };
+    } catch(_) {}
+
+    // prefer_fallback 中は conditional 利用可否を false に偽装して、サイトの conditional UI 起動を抑止
+    function ensureDisableConditionalAvail() {
+      try {
+        if (window.__tsu_cond_avail_disabled) return;
+        window.__tsu_cond_avail_disabled = true;
+        // PublicKeyCredential.isConditionalMediationAvailable を常に false にする
+        try {
+          const PKC = window.PublicKeyCredential;
+          if (PKC && typeof PKC.isConditionalMediationAvailable === 'function') {
+            const orig = PKC.isConditionalMediationAvailable.bind(PKC);
+            window.__tsu_orig_isCondAvail = orig;
+            PKC.isConditionalMediationAvailable = function(){ try { return Promise.resolve(false); } catch(_) { return Promise.resolve(false); } };
+          }
+        } catch(_) {}
+        // navigator.credentials.get で mediation=conditional を required に強制（保険）
+        try {
+          const nc = navigator.credentials;
+          if (nc && typeof nc.get === 'function' && !nc.__tsu_cond_to_required_wrapped) {
+            nc.__tsu_cond_to_required_wrapped = true;
+            const og = nc.get.bind(nc);
+            nc.get = function(opts){
+              try { if (opts && opts.mediation === 'conditional') opts.mediation = 'required'; } catch(_) {}
+              return og(opts);
+            };
+          }
+        } catch(_) {}
+        try { console.info('[tsu] injected: conditional availability disabled'); } catch(_) {}
+      } catch(_) {}
+    }
+
     // --- Network probe: detect if WebAuthn assertion is sent to server ---
     function installNetworkProbe() {
       try {
         if (window.__tsu_net_probe_installed) return;
         window.__tsu_net_probe_installed = true;
+        // 共通レコーダ
+        const recordPost = (info) => {
+          try {
+            const arr = (window.__tsu_pk_cache && window.__tsu_pk_cache.postLogs) || [];
+            const entry = { when: Date.now(), via: info.via || '', url: info.url || '', method: (info.method||'').toUpperCase(), matched: !!info.matched };
+            arr.push(entry);
+            while (arr.length > 50) arr.shift();
+            try { window.__tsu_pk_cache.postLogs = arr; } catch(_) {}
+            try { console.info('[tsu] injected: POST observed', entry); } catch(_) {}
+          } catch(_) {}
+        };
         // fetch
         try {
           const origFetch = window.fetch && window.fetch.bind(window);
@@ -37,25 +552,62 @@
                 const url = (typeof input === 'string') ? input : (input && input.url) || '';
                 const logAssertionIfAny = async (b) => {
                   try {
-                    if (!b) return;
+                    if (!b) return false;
                     if (typeof b === 'string') {
                       const t = b;
                       if (/"id"\s*:/.test(t) && /"response"\s*:/.test(t)) {
-                        try { console.info('[tsu] injected: fetch body looks like WebAuthn assertion', { url, method }); } catch(_) {}
+                        try {
+                          console.info('[tsu] injected: fetch body looks like WebAuthn assertion', { url, method });
+                          const meta = { when: Date.now(), via: 'fetch', url, method, keys: ['id','response'] };
+                          try { window.__tsu_pk_cache.lastSentAssertionMeta = meta; } catch(_) {}
+                          showTsuToast('Passkey assertion sent (fetch)');
+                        } catch(_) {}
+                        return true;
                       }
-                      return;
+                      return false;
                     }
                     if (b instanceof FormData) {
                       try {
                         let has = false;
                         b.forEach((v,k)=>{ if (!has && /^(id|rawId|response)$/i.test(String(k))) has = true; });
-                        if (has) console.info('[tsu] injected: fetch FormData contains WebAuthn fields', { url, method });
+                        if (has) {
+                          console.info('[tsu] injected: fetch FormData contains WebAuthn fields', { url, method });
+                          const meta = { when: Date.now(), via: 'fetch', url, method, keys: ['id/rawId/response(formdata)'] };
+                          try { window.__tsu_pk_cache.lastSentAssertionMeta = meta; } catch(_) {}
+                          showTsuToast('Passkey assertion sent (fetch/form)');
+                          return true;
+                        }
                       } catch(_) {}
-                      return;
+                      return false;
                     }
+                    return false;
                   } catch(_) {}
                 };
-                if (method !== 'GET') await logAssertionIfAny(body);
+                if (method !== 'GET') {
+                  let matched = false;
+                  try { matched = await logAssertionIfAny(body) === true; } catch(_) { matched = false; }
+                  recordPost({ via: 'fetch', url, method, matched });
+                }
+                try {
+                  const res = await origFetch(input, init);
+                  try {
+                    if (method !== 'GET') {
+                      const status = Number(res && res.status);
+                      const ok = !!(res && res.ok);
+                      try { console.info('[tsu] injected: POST result (fetch)', { url, status, ok }); } catch(_) {}
+                      try { window.__tsu_pk_cache.lastPostResult = { when: Date.now(), via: 'fetch', url, status, ok }; } catch(_) {}
+                    }
+                  } catch(_) {}
+                  return res;
+                } catch(e) {
+                  try {
+                    if (method !== 'GET') {
+                      try { console.error('[tsu] injected: POST failed (fetch)', { url, error: String(e && (e.message||e)) }); } catch(_) {}
+                      try { window.__tsu_pk_cache.lastPostResult = { when: Date.now(), via: 'fetch', url, status: 0, ok: false, error: String(e && (e.message||e)) }; } catch(_) {}
+                    }
+                  } catch(_) {}
+                  throw e;
+                }
               } catch(_) {}
               return origFetch(input, init);
             };
@@ -72,11 +624,36 @@
               try {
                 const method = this.__tsu_xhr_m || 'GET';
                 const url = this.__tsu_xhr_u || '';
-                if (method !== 'GET' && typeof body === 'string') {
-                  const t = body;
-                  if (/"id"\s*:/.test(t) && /"response"\s*:/.test(t)) {
-                    try { console.info('[tsu] injected: XHR body looks like WebAuthn assertion', { url, method }); } catch(_) {}
-                  }
+                let matched = false;
+                if (method !== 'GET') {
+                  try {
+                    if (typeof body === 'string') {
+                      const t = body;
+                      if (/"id"\s*:/.test(t) && /"response"\s*:/.test(t)) {
+                        matched = true;
+                        try {
+                          console.info('[tsu] injected: XHR body looks like WebAuthn assertion', { url, method });
+                          const meta = { when: Date.now(), via: 'xhr', url, method, keys: ['id','response'] };
+                          try { window.__tsu_pk_cache.lastSentAssertionMeta = meta; } catch(_) {}
+                          showTsuToast('Passkey assertion sent (xhr)');
+                        } catch(_) {}
+                      }
+                    }
+                  } catch(_) {}
+                  try { recordPost({ via: 'xhr', url, method, matched }); } catch(_) {}
+                  try {
+                    const self = this;
+                    const once = (fn) => {
+                      let done = false;
+                      return function(){ if (done) return; done = true; try { fn.apply(this, arguments); } catch(_) {} };
+                    };
+                    const onLoad = once(function(){ try { const status = Number(self.status); const ok = status >= 200 && status < 300; console.info('[tsu] injected: POST result (xhr)', { url, status, ok }); try { window.__tsu_pk_cache.lastPostResult = { when: Date.now(), via: 'xhr', url, status, ok }; } catch(_) {} } catch(_) {} });
+                    const onErr = once(function(evt){ try { console.error('[tsu] injected: POST failed (xhr)', { url, type: (evt && evt.type) || 'error' }); try { window.__tsu_pk_cache.lastPostResult = { when: Date.now(), via: 'xhr', url, status: 0, ok: false, error: (evt && evt.type) || 'error' }; } catch(_) {} } catch(_) {} });
+                    try { this.addEventListener('load', onLoad, { once: true }); } catch(_) {}
+                    try { this.addEventListener('error', onErr, { once: true }); } catch(_) {}
+                    try { this.addEventListener('abort', onErr, { once: true }); } catch(_) {}
+                    try { this.addEventListener('timeout', onErr, { once: true }); } catch(_) {}
+                  } catch(_) {}
                 }
               } catch(_) {}
               return origSend.apply(this, arguments);
@@ -230,9 +807,10 @@
         try {
           const now = Date.now();
           const cd = Number(window.__tsu_pk_force_cd_ts || 0);
+          const cdWindow = (window.__tsu_pk_prefer_fallback === true) ? 600 : 1200;
           if (force === true) {
-            if (cd && (now - cd) < 1200) {
-              console.info('[tsu] injected: triggerLoginFallback forced skipped (cooldown)', { sinceMs: now - cd });
+            if (cd && (now - cd) < cdWindow) {
+              console.info('[tsu] injected: triggerLoginFallback forced skipped (cooldown)', { sinceMs: now - cd, windowMs: cdWindow });
               return;
             }
             window.__tsu_pk_force_cd_ts = now;
@@ -241,10 +819,16 @@
         // 強制時でも、同期イベント経由の起動では待機せずに即時実行してユーザーアクティベーションを保持
         try {
           if (force === true && noWait !== true) {
-            const start = Date.now();
-            while (!(window.__tsu_pk_preferred && window.__tsu_pk_preferred.credentialIdB64)) {
-              if ((Date.now() - start) > 200) break;
-              await sleep(20);
+            const deadline = Date.now() + 800;
+            let wait = 40;
+            while (!(window.__tsu_pk_preferred && window.__tsu_pk_preferred.credentialIdB64) && Date.now() < deadline) {
+              await sleep(wait);
+              wait = Math.min(200, Math.floor(wait * 1.5));
+            }
+            if (!(window.__tsu_pk_preferred && window.__tsu_pk_preferred.credentialIdB64)) {
+              try { console.info('[tsu] injected: preferred not ready, reschedule forced fallback'); } catch(_) {}
+              setTimeout(() => { try { triggerLoginFallback(true, true); } catch(_) {} }, 180);
+              return;
             }
           }
         } catch(_) {}
@@ -264,13 +848,14 @@
           if (force === true && window.__tsu_pk_get_inflight) {
             console.info('[tsu] injected: forced fallback waiting inflight to clear');
             const start = Date.now();
+            const cap = (window.__tsu_pk_prefer_fallback === true) ? 400 : 2000;
             while (window.__tsu_pk_get_inflight) {
-              if ((Date.now() - start) > 1500) break;
+              if ((Date.now() - start) > cap) break;
               await sleep(50);
             }
             const waited = Date.now() - start;
             console.info('[tsu] injected: forced fallback inflight wait done', { waitedMs: waited, cleared: !window.__tsu_pk_get_inflight });
-            if (window.__tsu_pk_get_inflight) {
+            if (window.__tsu_pk_get_inflight && window.__tsu_pk_prefer_fallback !== true) {
               // まだ in-flight の場合は保留し、少し後に再試行（上限を設けてループを防止）
               try {
                 const now2 = Date.now();
@@ -315,7 +900,7 @@
               console.info('[tsu] injected: triggerLoginFallback skipped', { inflight, recent, sinceMs: last ? (now - last) : -1 });
               return;
             }
-            if (inflight && appliedRecent) {
+            if (!inflight && appliedRecent) {
               console.info('[tsu] injected: triggerLoginFallback skipped (applied recent)', { sinceAppliedMs: now - prefAppliedTs });
               return;
             }
@@ -372,11 +957,13 @@
         if (sorted.length) {
           const target = sorted[0].el;
           try { target.focus && target.focus(); } catch(_) {}
-          // クリックの連打を抑止
+          // クリックの連打を抑止しつつ、prefer_fallback 中で inflight のときはクリック抑止
           try {
             const lastClick = Number(window.__tsu_pk_last_click_ts || 0);
             const now2 = Date.now();
-            if (!lastClick || (now2 - lastClick) > 800) {
+            if (window.__tsu_pk_prefer_fallback === true && window.__tsu_pk_get_inflight) {
+              console.info('[tsu] injected: skip page button click due to prefer_fallback (inflight)');
+            } else if (!lastClick || (now2 - lastClick) > 800) {
               window.__tsu_pk_last_click_ts = now2;
               target.click();
               console.info('[tsu] injected: clicked best login/passkey button');
@@ -419,7 +1006,14 @@
               try { window.__tsu_pk_pref_set_ts = Date.now(); } catch(_) {}
             }
             try { console.info('[tsu] injected: setPreferredCredential', { hasId: !!credB64, rpId }); } catch(_) {}
-            // 同期イベントからの強制フォールバックに一本化（ここではスケジュールしない）
+            // 可能なら同期起動を促す
+            try { if (typeof window.__tsu_setAutoEnabled === 'function') window.__tsu_setAutoEnabled(true); } catch(_) {}
+            try {
+              const inflight = !!window.__tsu_pk_get_inflight;
+              if (!inflight) {
+                setTimeout(() => { try { window.dispatchEvent(new Event('tsu:triggerPasskeyLoginSync')); } catch(_) {} }, 0);
+              }
+            } catch(_) {}
             return;
           }
           if (data.type === 'tsu:triggerPasskeyLogin') {
@@ -444,15 +1038,32 @@
               const resolvedTs = Number(window.__tsu_pk_last_resolved_ts || 0);
               const sinceCond = condTs ? (Date.now() - condTs) : Infinity;
               const unresolved = !resolvedTs || (condTs && resolvedTs < condTs);
-              if (unresolved && sinceCond > 8000) {
+              if (unresolved && sinceCond > 6000) {
                 console.info('[tsu] injected: final bypass enabling prefer_fallback and forcing');
-                try { window.__tsu_pk_prefer_fallback = true; } catch(_) {}
-                await triggerLoginFallback(true, true);
+                try { window.__tsu_pk_prefer_fallback = true; window.__tsu_pk_no_esc_dismiss = false; } catch(_) {}
+                try { ensureDisableConditionalAvail(); } catch(_) {}
+                try {
+                  if (window.__tsu_pk_no_esc_dismiss === true) {
+                    console.info('[tsu] injected: final bypass skip ESC due to flag');
+                  } else {
+                    if (window.__tsu_allow_ui_dismiss === true) { dismissConditionalUI(); }
+                  }
+                } catch(_) {}
+                try { await sleep(150); } catch(_) {}
+                // まずはハードテイクオーバーで直接 our get() を起動
+                try {
+                  const ok = await startHardTakeover('final-bypass');
+                  if (ok) { return; }
+                } catch(_) {}
+                // prefer_fallback 中は DOM フォールバックを行わず、テイクオーバー再試行に専念
+                try {
+                  setTimeout(() => { try { startHardTakeover('final-bypass-retry'); } catch(_) {} }, 800);
+                } catch(_) {}
               } else {
                 console.info('[tsu] injected: final bypass skip', { inflight, sinceCondMs: sinceCond, unresolved });
               }
             } catch(_) {} finally { try { window.__tsu_pk_final_bypass_sched = false; } catch(_) {} }
-          }, 8000);
+          }, 6000);
           return true;
         } catch(_) { return false; }
       };
@@ -461,7 +1072,7 @@
           if (!window.__tsu_pk_is_conditional) return false;
           if (window.__tsu_pk_prefer_fallback === true) {
             console.info('[tsu] injected: inflight rescue bypass via prefer_fallback');
-            (async () => { try { await triggerLoginFallback(true, true); } catch(_) {} })();
+            (async () => { try { if (window.__tsu_allow_ui_dismiss === true) { dismissConditionalUI(); } await sleep(300); await triggerLoginFallback(true, true); } catch(_) {} })();
             return true;
           }
           if (window.__tsu_pk_rescue_sched) return true;
@@ -489,7 +1100,7 @@
           if (!window.__tsu_pk_is_conditional) return false;
           if (window.__tsu_pk_prefer_fallback === true) {
             console.info('[tsu] injected: conditional bypass via prefer_fallback');
-            (async () => { try { await triggerLoginFallback(true, true); } catch(_) {} })();
+            (async () => { try { if (window.__tsu_allow_ui_dismiss === true) { dismissConditionalUI(); } await sleep(300); await triggerLoginFallback(true, true); } catch(_) {} })();
             return true;
           }
           if (window.__tsu_pk_cond_sched) return true;
@@ -614,18 +1225,156 @@
       return cred;
     };
 
+    // 元の get を保持
+    try { if (!window.__tsu_orig_get) window.__tsu_orig_get = navigator.credentials.get; } catch(_) {}
+    try { if (!window.__tsu_orig_create) window.__tsu_orig_create = navigator.credentials.create; } catch(_) {}
+    navigator.credentials.create = async function(options){
+      try {
+        try { if (window.__tsu_disable_all_intervention === true) { return origCreate(options); } } catch(_) {}
+        let email = '';
+        try {
+          const q1 = document && document.querySelector && document.querySelector('input[type="email"]');
+          const q2 = document && document.querySelector && document.querySelector('input[name*="email" i]');
+          const q3 = document && document.getElementById && document.getElementById('email');
+          const el = q1 || q2 || q3;
+          if (el && typeof el.value === 'string') { email = String(el.value).trim(); }
+        } catch(_) {}
+        try { if (!email && window.__tsu_pk_cache && window.__tsu_pk_cache.email) { email = String(window.__tsu_pk_cache.email||''); } } catch(_) {}
+        try { if (email) { try { window.__tsu_pk_cache.email = email; } catch(_) {} } } catch(_) {}
+        let outOptions = options;
+        try {
+          const host = String(location.hostname||'');
+          if (/passkey\.io$/i.test(host) && email && options && typeof options === 'object') {
+            // 仕様通り: options.publicKey を想定
+            if (options.publicKey && options.publicKey.user) {
+              try {
+                const user = options.publicKey.user;
+                if (!user.name) user.name = email;
+                if (!user.displayName) user.displayName = email;
+                try { console.info('[tsu] injected: applied email as passkey title', { email }); } catch(_) {}
+              } catch(_) {}
+            } else if (options.user) {
+              // 稀に publicKey 直下ではなく、直接 PublicKeyCredentialCreationOptions 相当が渡るケースを保険
+              try {
+                const user = options.user;
+                if (!user.name) user.name = email;
+                if (!user.displayName) user.displayName = email;
+                try { console.info('[tsu] injected: applied email as passkey title (direct)', { email }); } catch(_) {}
+              } catch(_) {}
+            }
+            // 呼び出し形は維持（publicKey があればそのまま、無ければそのまま）
+            outOptions = options;
+          }
+        } catch(_) {}
+      } catch(_) {}
+      return origCreate(outOptions);
+    };
     navigator.credentials.get = async function (options) {
       try {
+        // 完全バイパス: 介入を全て無効化して OS UI を優先
+        try {
+          if (window.__tsu_disable_all_intervention === true) {
+            try {
+              const PKC = window.PublicKeyCredential;
+              if (window.__tsu_orig_isCondAvail && PKC && typeof PKC.isConditionalMediationAvailable === 'function') {
+                PKC.isConditionalMediationAvailable = window.__tsu_orig_isCondAvail;
+              }
+            } catch(_) {}
+            return origGet(options);
+          }
+        } catch(_) {}
+        // キャンセルガード: 当方以外の get() を即時中止して新規ペンディング発生を防ぐ
+        try {
+          if (window.__tsu_cancel_guard_on === true && window.__tsu_pk_ours !== true) {
+            console.info('[tsu] injected: cancel-guard aborting site get');
+            try { window.__tsu_pk_get_inflight = false; } catch(_) {}
+            throw new DOMException('Cancelled by takeover guard', 'AbortError');
+          }
+        } catch(_) {}
+        // マスターOFF中はフルパススルー（当方以外の動作・抑止を行わない）
+        try {
+          if (!autoEnabled() && window.__tsu_pk_ours !== true) {
+            const og = (window.__tsu_orig_get || null);
+            if (og) return await og.call(navigator.credentials, options);
+          }
+        } catch(_) {}
+        try { if (window.__tsu_pk_prefer_fallback === true) ensureDisableConditionalAvail(); } catch(_) {}
         const pub = options && options.publicKey;
-        const mediation = (options && options.mediation) || '';
+        let mediation = (options && options.mediation) || '';
+        if (window.__tsu_pk_prefer_fallback === true && window.__tsu_pk_takeover !== true && conditionalAllowedNow()) {
+          try { if (options) { options.mediation = 'required'; mediation = 'required'; console.info('[tsu] injected: coercing mediation to required due to prefer_fallback'); } } catch(_) {}
+        }
         const isConditional = String(mediation) === 'conditional';
+        // マスターOFF時のみ、許可ウィンドウ外の get() を抑止（リロード直後の不意なOSポップアップ対策）
+        try {
+          if (!autoEnabled()) {
+            const allowed = conditionalAllowedNow();
+            if (!allowed && window.__tsu_pk_prefer_fallback !== true && window.__tsu_pk_ours !== true) {
+              console.info('[tsu] injected: suppress get (not in allow window)');
+              throw new DOMException('Suppressed by policy (not in allow window)', 'AbortError');
+            }
+          }
+        } catch(_) {}
+        // 条件付きUIの抑止は、マスターOFF時のみ適用（ON時は機会を確保）
+        try {
+          if (isConditional) {
+            const okUntil = Number(window.__tsu_cond_ok_until || 0);
+            const ok = okUntil && Date.now() < okUntil;
+            if (!ok && window.__tsu_pk_prefer_fallback !== true && !autoEnabled()) {
+              console.info('[tsu] injected: suppress conditional get (not in allow window)');
+              throw new DOMException('Conditional UI suppressed', 'AbortError');
+            }
+          }
+        } catch(_) {}
+        // 成功後のサイレント期間は、当方以外の get() を抑止
+        try {
+          const qt = Number(window.__tsu_pk_quiet_until || 0);
+          if (qt && Date.now() < qt && window.__tsu_pk_ours !== true) {
+            console.info('[tsu] injected: suppressing site get() (quiet window after success)');
+            throw new DOMException('Suppressed after success', 'AbortError');
+          }
+        } catch(_) {}
+        // 直近 options のキャッシュ（ハードテイクオーバー用）。ブロック前に必ず確保する。
+        try { window.__tsu_pk_last_options = options; if (pub) window.__tsu_pk_last_pubkey = pub; } catch(_) {}
+        // prefer_fallback 中はサイト発の get() をブロック。ただし即座に当方の get() をスケジュールして引き継ぐ。
+        try {
+          if (window.__tsu_pk_prefer_fallback === true && window.__tsu_pk_ours !== true) {
+            console.info('[tsu] injected: blocking site-initiated get() during prefer_fallback (redirect to ours)');
+            try { (window.queueMicrotask ? queueMicrotask : setTimeout)(() => { try { startHardTakeover('block-redirect'); } catch(_) {} }, 0); } catch(_) {}
+            throw new DOMException('Blocked by prefer_fallback takeover', 'AbortError');
+          }
+        } catch(_) {}
+        // prefer_fallback 中はサイトの conditional get を required に変換して競合を解消
+        if (window.__tsu_pk_prefer_fallback === true && isConditional) {
+          try { console.info('[tsu] injected: converting site conditional get to required due to prefer_fallback'); } catch(_) {}
+          try { options.mediation = 'required'; mediation = 'required'; } catch(_) {}
+        }
+        // strict 窓口中は当方以外の get() をブロック
+        try {
+          const strictSince = Number(window.__tsu_pk_force_strict_ts || 0);
+          const strictActive = !!strictSince && (Date.now() - strictSince) < 10000; // フォールバック直後の get は厳格（10秒）
+          // 既に get 実行中であれば、再入（自他問わず）を遮断（Cancel連鎖を避ける）。ただし Takeover は許可
+          const depth = Number(window.__tsu_pk_get_depth || 0);
+          if (strictActive && depth > 0) {
+            if (window.__tsu_pk_takeover === true) {
+              console.info('[tsu] injected: allow re-entrant get for takeover during strict window');
+            } else {
+              console.info('[tsu] injected: blocking re-entrant get during strict window');
+              throw new DOMException('Blocked re-entrant during strict window', 'AbortError');
+            }
+          }
+          if (strictActive && window.__tsu_pk_prefer_fallback === true && window.__tsu_pk_ours !== true) {
+            console.info('[tsu] injected: blocking non-owned get during strict window');
+            throw new DOMException('Blocked during strict window', 'AbortError');
+          }
+        } catch(_) {}
         try {
           window.__tsu_pk_is_conditional = !!isConditional;
           if (isConditional) { window.__tsu_pk_cond_detect_ts = Date.now(); nudgeConditionalUI(); }
         } catch(_) {}
         if (pub) {
           try {
-            if (pub.rpId) window.__tsu_pk_cache.rpId = String(pub.rpId);
+            if (pub.rp && pub.rp.id) window.__tsu_pk_cache.rpId = String(pub.rp.id);
             if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title);
             // 優先 credential を allowCredentials へ先頭追加
             try {
@@ -652,11 +1401,12 @@
                   // rpId が一致しない場合は allowCredentials には手を入れない
                 } else {
                   const strictSince = Number(window.__tsu_pk_force_strict_ts || 0);
-                  const strict = !!strictSince && (Date.now() - strictSince) < 4000; // フォールバック直後の get は厳格（4秒）
+                  const strict = !!strictSince && (Date.now() - strictSince) < 10000; // フォールバック直後の get は厳格（10秒）
                   const ac = (pub.allowCredentials && Array.isArray(pub.allowCredentials)) ? pub.allowCredentials.slice() : [];
                   try { console.info('[tsu] injected: before allowCredentials length', ac.length); } catch(_) {}
-                  const prefId = b64ToBytes(pref.credentialIdB64);
+                  const prefId = b64uToBytes(pref.credentialIdB64);
                   const bytesEq = (a,b) => { if (!a || !b || a.length!==b.length) return false; for (let i=0;i<a.length;i++) if (a[i]!==b[i]) return false; return true; };
+                  const toAB = (u8) => { try { return (u8 && u8.buffer) ? (u8.byteOffset===0 && u8.byteLength===u8.buffer.byteLength ? u8.buffer.slice(0) : u8.slice().buffer) : new ArrayBuffer(0); } catch(_) { return new ArrayBuffer(0); } };
                   let found = -1;
                   const norm = ac.map((x, i) => {
                     try {
@@ -664,26 +1414,46 @@
                       let buf = null;
                       if (id instanceof ArrayBuffer) buf = new Uint8Array(id);
                       else if (ArrayBuffer.isView(id)) buf = new Uint8Array(id.buffer, id.byteOffset, id.byteLength);
-                      else if (typeof id === 'string') buf = b64ToBytes(id);
+                      else if (typeof id === 'string') buf = b64uToBytes(id);
                       else buf = new Uint8Array(0);
                       if (bytesEq(buf, prefId)) found = i;
-                      return { type: 'public-key', id: buf, transports: x && x.transports };
+                      return { type: 'public-key', id: toAB(buf), transports: x && x.transports };
                     } catch(_) { return { type: 'public-key', id: new Uint8Array(0) }; }
                   });
                   let final = norm;
-                  const prefItem = { type: 'public-key', id: prefId };
+                  const prefItem = { type: 'public-key', id: toAB(prefId), transports: ['internal'] };
                   if (found >= 0) {
                     const item = final.splice(found, 1)[0];
                     final.unshift(item);
                     try { console.info('[tsu] injected: preferred moved to front'); } catch(_) {}
                   } else {
-                    final.unshift(prefItem);
-                    try { console.info('[tsu] injected: preferred injected to front'); } catch(_) {}
+                    // 既存の allowCredentials が非空なら注入しない（RP側で未知ID扱いとなり失敗する危険）。
+                    if (ac.length === 0) {
+                      final.unshift(prefItem);
+                      try { console.info('[tsu] injected: preferred injected to front (allowCredentials was empty)'); } catch(_) {}
+                    } else {
+                      try { console.info('[tsu] injected: preferred not present and allowCredentials non-empty; skip injection to avoid unrecognized ID'); } catch(_) {}
+                    }
                   }
-                  if (strict) {
-                    final = [final[0]];
-                    try { console.info('[tsu] injected: strict mode applied, allowCredentials narrowed to 1'); } catch(_) {}
+                  if (strict && found >= 0) {
+                    if (window.__tsu_allow_strict_narrowing === true) {
+                      final = [final[0]];
+                      try { console.info('[tsu] injected: strict mode applied, allowCredentials narrowed to 1'); } catch(_) {}
+                    } else {
+                      try { console.info('[tsu] injected: strict mode bypassed (narrowing disabled by flag)'); } catch(_) {}
+                    }
+                  } else if (strict && found < 0) {
+                    try { console.info('[tsu] injected: strict mode skipped (preferred not present in existing allowCredentials)'); } catch(_) {}
                   }
+                  // 先頭の transports に 'internal' を付与してヒント強化
+                  try {
+                    const head = final[0];
+                    if (head) {
+                      const set = new Set(Array.isArray(head.transports) ? head.transports.map(String) : []);
+                      set.add('internal');
+                      head.transports = Array.from(set);
+                    }
+                  } catch(_) {}
                   try { console.info('[tsu] injected: after allowCredentials length', final.length); } catch(_) {}
                   pub.allowCredentials = final;
                   try { window.__tsu_pk_pref_applied_ts = Date.now(); } catch(_) {}
@@ -714,9 +1484,10 @@
         }
       } catch (_) {}
       // 起動タイムスタンプ・フラグ
-      try { window.__tsu_pk_last_ts = Date.now(); window.__tsu_pk_get_inflight = true; } catch(_) {}
+      try { window.__tsu_pk_last_ts = Date.now(); window.__tsu_pk_get_inflight = true; if (!window.__tsu_pk_inflight_since) window.__tsu_pk_inflight_since = window.__tsu_pk_last_ts; window.__tsu_pk_get_depth = Number(window.__tsu_pk_get_depth||0) + 1; } catch(_) {}
       let cred;
       try {
+        try { window.__tsu_pk_ours = true; } catch(_) {}
         cred = await origGet(options);
         try { console.info('[tsu] injected: navigator.credentials.get resolved'); } catch(_) {}
         try { window.__tsu_pk_last_resolved_ts = Date.now(); } catch(_) {}
@@ -724,6 +1495,7 @@
         try { console.warn('[tsu] injected: navigator.credentials.get error', e && e.name, e && e.message); } catch(_) {}
         // AbortError の場合、直近で preferred が設定されていれば一度だけリトライ
         const isAbort = (e && e.name) === 'AbortError';
+        const isNotAllowed = (e && e.name) === 'NotAllowedError';
         const prefSetTs = Number(window.__tsu_pk_pref_set_ts || 0);
         const now = Date.now();
         const prefRecent = prefSetTs && (now - prefSetTs) < 2000;
@@ -746,24 +1518,49 @@
             }
           }
         } catch(_) {}
+        // NotAllowedError の救済: 直近の preferred 反映があるなら同期フォールバックを再トリガ（1回だけ）
+        try {
+          if (isNotAllowed && (prefRecent || appliedRecent) && !window.__tsu_pk_notallowed_fallback_fired) {
+            window.__tsu_pk_notallowed_fallback_fired = true;
+            setTimeout(() => { try { window.dispatchEvent(new Event('tsu:triggerPasskeyLoginSync')); } catch(_) {} }, 0);
+          }
+        } catch(_) {}
         if (isAbort && (prefRecent || appliedRecent) && !window.__tsu_pk_get_retried) {
           try { console.info('[tsu] injected: considering silent retry after AbortError', { prefRecent, appliedRecent }); } catch(_) {}
           try { window.__tsu_pk_get_retried = true; } catch(_) {}
-          await sleep(1100);
+          // リトライ保護: 短時間の cancel-guard と prefer_fallback を有効化し、conditional を抑止
+          try {
+            if (window.__tsu_aggressive_retry === true) {
+              window.__tsu_cancel_guard_on = true;
+              window.__tsu_pk_prefer_fallback = true;
+              try { ensureDisableConditionalAvail(); } catch(_) {}
+              try { installErrorShield(); } catch(_) {}
+              try { dismissConditionalUI(true); } catch(_) {}
+            }
+          } catch(_) {}
+          await sleep(800);
           const latestStart = Number(window.__tsu_pk_last_ts || 0);
           if (!latestStart || latestStart <= lastStart) {
             try { console.info('[tsu] injected: performing silent retry (no new get started)'); } catch(_) {}
-            cred = await origGet(options);
+            try { if (typeof window.__tsu_guardedEsc === 'function') { await window.__tsu_guardedEsc(); } } catch(_) {}
+            try { window.__tsu_pk_ours = true; } catch(_) {}
+            let retryOpts = options;
+            try {
+              retryOpts = Object.assign({}, options || {});
+              retryOpts.mediation = 'required';
+            } catch(_) {}
+            cred = await origGet(retryOpts);
             try { console.info('[tsu] injected: navigator.credentials.get resolved (retry)'); } catch(_) {}
             try { window.__tsu_pk_last_resolved_ts = Date.now(); } catch(_) {}
           } else {
             try { console.info('[tsu] injected: skip retry, new get started'); } catch(_) {}
             throw e;
           }
+          try { setTimeout(() => { try { window.__tsu_cancel_guard_on = false; } catch(_) {} }, 2000); } catch(_) {}
         } else {
           throw e;
         }
-      } finally { try { window.__tsu_pk_get_inflight = false; window.__tsu_pk_get_retried = false; } catch(_) {} }
+      } finally { try { window.__tsu_pk_get_inflight = false; window.__tsu_pk_inflight_since = 0; window.__tsu_pk_get_retried = false; window.__tsu_pk_ours = false; window.__tsu_pk_takeover = false; window.__tsu_pk_get_depth = Math.max(0, Number(window.__tsu_pk_get_depth||0) - 1); } catch(_) {} }
       // 成功時の詳細ログと送信キャッシュ
       try {
         if (cred && cred.type === 'public-key') {

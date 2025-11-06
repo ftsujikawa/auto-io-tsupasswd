@@ -115,15 +115,13 @@ app.post('/generate-authentication-options', async (req, res) => {
     const { username } = req.body || {};
     const rpid = getRPID(req);
     const user = db.users.get(username) || { authenticators: [], currentChallenge: undefined };
-    const allowCredentials = (user.authenticators || []).map((a) => ({
-      id: a.credentialID,
-      type: 'public-key',
-    }));
+    const allowCredentials = [];
     const options = await generateAuthenticationOptions({
       timeout: 60000,
       allowCredentials,
       userVerification: 'preferred',
       rpID: rpid,
+      authenticatorSelection: { authenticatorAttachment: 'platform' },
     });
     user.currentChallenge = options.challenge;
     db.users.set(username, user);
