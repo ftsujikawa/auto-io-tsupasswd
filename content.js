@@ -345,9 +345,10 @@
       })();
       // デバッグ: 抽出状況をロギング
       try { console.info('[tsu] passkey extracted', { rpId, hasCred: !!detail.credentialIdB64, hasUser: !!detail.userHandleB64, hasPub: !!detail.publicKeyB64, signCount: detail.signCount }); } catch(_) {}
-      // 必須チェック（credential のみ必須）
+      // 必須チェック（credential と publicKey の両方を必須に変更）
       const hasCred = !!detail.credentialIdB64;
-      if (!hasCred) {
+      const hasPub = !!detail.publicKeyB64;
+      if (!hasCred || !hasPub) {
         try { console.info('[tsu] passkey save skip: missing credentialIdB64'); } catch(_) {}
         try { if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, raw); } } catch(_) {}
         return;
@@ -491,6 +492,23 @@
               window.__tsu_seen_cred[key] = Date.now();
             }
           } catch(_) {}
+          // フォールバック: ブリッジが受信できなかった場合でも、登録(create)直後で十分な情報がそろっているなら自動保存を試みる
+          try {
+            const det = d || extractPasskeyFromPage(document) || {};
+            const hasCred = !!(det.credentialIdB64 || det.cred);
+            const hasPub = !!(det.publicKeyB64 || det.pub);
+            if (hasCred && hasPub) {
+              const f = (window.savePasskeySilentlyRef || (window.tsupasswd && window.tsupasswd.savePasskeySilently) || (typeof savePasskeySilently === 'function' && savePasskeySilently));
+              if (typeof f === 'function') {
+                // 二重保存防止: 直近開始から短時間は再起動しない
+                const now = Date.now();
+                const started = Number(window.__tsu_last_save_started || 0);
+                if (!started || (now - started) > 1500) {
+                  setTimeout(() => { try { f(null, det); } catch(_) {} }, 60);
+                }
+              }
+            }
+          } catch(_) {}
         } catch(_) {}
       }, false);
       window.__tsu_pk_event_bound = true;
@@ -565,7 +583,14 @@
                 const startTs = Date.now();
                 setTimeout(() => {
                   try { console.info('[tsu] autosave(passkey): invoke'); } catch(_) {}
-                  try { (window.savePasskeySilentlyRef || f)(null, detail); } catch(e) { try { console.info('[tsu] autosave(passkey) error', String(e && e.message || e)); } catch(_) {} }
+                  try {
+                    const det = detail || extractPasskeyFromPage(document) || {};
+                    if (det && det.publicKeyB64 && det.credentialIdB64) {
+                      (window.savePasskeySilentlyRef || f)(null, det);
+                    } else {
+                      try { console.info('[tsu] autosave(passkey) skip: missing publicKey/credential'); } catch(_) {}
+                    }
+                  } catch(e) { try { console.info('[tsu] autosave(passkey) error', String(e && e.message || e)); } catch(_) {} }
                 }, 120);
                 // ウォッチドッグ: 一定時間内に enter マーカーが更新されなければフォールバック
                 setTimeout(() => {

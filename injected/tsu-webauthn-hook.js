@@ -77,6 +77,57 @@
       }
     };
 
+    // --- Helpers: (prefixed) toU8, minimal CBOR decode, parseAttestation ---
+    function __tsu_toU8(buf) {
+      try { return buf instanceof Uint8Array ? buf : new Uint8Array(buf); } catch(_) { return new Uint8Array(0); }
+    }
+    function __tsu_cborDecodeItem(u8, offset) {
+      const len = u8.length;
+      if (offset >= len) throw new Error('CBOR: OOB');
+      const ib = u8[offset];
+      const major = ib >> 5;
+      let ai = ib & 0x1f;
+      let pos = offset + 1;
+      const readLen = (n) => { if (pos + n > len) throw new Error('CBOR: OOB'); let v = 0; for (let i=0;i<n;i++) v = (v<<8) | u8[pos+i]; pos += n; return v; };
+      const readAddl = () => {
+        if (ai < 24) return ai;
+        if (ai === 24) return readLen(1);
+        if (ai === 25) return readLen(2);
+        if (ai === 26) return readLen(4);
+        if (ai === 27) { const hi = readLen(4), lo = readLen(4); return hi * 0x100000000 + lo; }
+        throw new Error('CBOR: indef/reserved');
+      };
+      if (major === 0) { const v = readAddl(); return { value: v, length: pos - offset }; }
+      if (major === 1) { const v = readAddl(); return { value: -1 - v, length: pos - offset }; }
+      if (major === 2) { const l = readAddl(); if (pos + l > len) throw new Error('CBOR: bytes OOB'); const val = u8.slice(pos, pos+l); pos += l; return { value: val, length: pos - offset }; }
+      if (major === 3) { const l = readAddl(); if (pos + l > len) throw new Error('CBOR: text OOB'); const td = new TextDecoder('utf-8'); const val = td.decode(u8.slice(pos, pos+l)); pos += l; return { value: val, length: pos - offset }; }
+      if (major === 4) { const l = readAddl(); const arr = []; for (let i=0;i<l;i++) { const it = __tsu_cborDecodeItem(u8, pos); arr.push(it.value); pos += it.length; } return { value: arr, length: pos - offset }; }
+      if (major === 5) { const l = readAddl(); const obj = {}; for (let i=0;i<l;i++) { const k = __tsu_cborDecodeItem(u8, pos); pos += k.length; const v = __tsu_cborDecodeItem(u8, pos); pos += v.length; obj[k.value] = v.value; } return { value: obj, length: pos - offset }; }
+      if (major === 6) { /* tag */ const inner = __tsu_cborDecodeItem(u8, pos); pos += inner.length; return { value: inner.value, length: pos - offset }; }
+      if (major === 7) { return { value: null, length: pos - offset }; }
+      throw new Error('CBOR: unknown major');
+    }
+    function __tsu_parseAttestation(u8) {
+      try {
+        const top = __tsu_cborDecodeItem(u8, 0).value; // map
+        const authData = top && top.authData ? __tsu_toU8(top.authData) : null;
+        if (!authData || authData.length < 37) return null;
+        let p = 0;
+        /* const rpIdHash = */ authData.slice(p, p+32); p += 32;
+        const flags = authData[p]; p += 1;
+        const signCount = ((authData[p] << 24) | (authData[p+1] << 16) | (authData[p+2] << 8) | authData[p+3]) >>> 0; p += 4;
+        const AT = (flags & 0x40) !== 0;
+        if (!AT) return { signCount };
+        p += 16; // aaguid
+        const credIdLen = (authData[p] << 8) | authData[p+1]; p += 2;
+        p += credIdLen; // credential id
+        // credentialPublicKey (CBOR). Decode to get its length and slice raw bytes
+        const pkItem = __tsu_cborDecodeItem(authData, p);
+        const raw = authData.slice(p, p + pkItem.length);
+        return { signCount, publicKeyRaw: raw };
+      } catch(_) { return null; }
+    }
+
   // 条件付きUIの不要表示を抑止するための許可ウィンドウ管理
   try {
     if (typeof window.__tsu_cond_ok_until !== 'number') window.__tsu_cond_ok_until = 0;
@@ -184,7 +235,12 @@
   function inBootQuiet() {
     try { const t = Number(window.__tsu_boot_quiet_until || 0); return !!t && Date.now() < t; } catch(_) { return false; }
   }
- // 条件付きUIを明示的に閉じるナッジ（Esc）
+   function isTextEditable(el) { try { if (!el || !(el instanceof HTMLElement)) return false; const tag = (el.tagName||'').toLowerCase(); if (tag === 'input') { const t = (el.getAttribute('type')||'text').toLowerCase(); return ['text','email','search','url','tel','password'].includes(t); } return tag === 'textarea' || el.isContentEditable === true; } catch(_) { return false; } }
+   function conditionalAllowedNow() { try { const okUntil = Number(window.__tsu_cond_ok_until || 0); if (okUntil && Date.now() < okUntil) return true; if (inBootQuiet()) return false; const a = document && document.activeElement; const vis = (document.visibilityState||'visible') === 'visible'; if (!vis) return false; if (isTextEditable(a)) return true; return false; } catch(_) { return false; } }
+   function conditionalGraceActive() { try { const now = Date.now(); const det = Number(window.__tsu_pk_cond_detect_ts || 0); const recentDetect = det && (now - det) < 6000; const a = document && document.activeElement; const focused = isTextEditable(a); return !!(recentDetect || focused); } catch(_) { return false; } }
+   try { window.__tsu_dumpPasskeyState = function(){ try { return { now: Date.now(), condOkUntil: Number(window.__tsu_cond_ok_until||0), bootQuietUntil: Number(window.__tsu_boot_quiet_until||0), condDetectTs: Number(window.__tsu_pk_cond_detect_ts||0), isConditional: !!window.__tsu_pk_is_conditional, preferFallback: !!window.__tsu_pk_prefer_fallback, cancelGuard: !!window.__tsu_cancel_guard_on, quietUntil: Number(window.__tsu_pk_quiet_until||0), inflight: !!window.__tsu_pk_get_inflight, depth: Number(window.__tsu_pk_get_depth||0) }; } catch(_) { return {}; } }; } catch(_) {}
+   try { if (!window.__tsu_cond_ok_until) { try { document.addEventListener('focusin', function(ev){ try { const t = ev && ev.target; if (isTextEditable(t)) window.__tsu_cond_ok_until = Date.now() + 120000; } catch(_) {} }, true); } catch(_) {} try { document.addEventListener('keydown', function(){ try { const a = document && document.activeElement; if (isTextEditable(a)) window.__tsu_cond_ok_until = Date.now() + 120000; } catch(_) {} }, true); } catch(_) {} } } catch(_) {}
+  // 条件付きUIを明示的に閉じるナッジ（Esc）
     function dismissConditionalUI(force) {
       try {
         try { if (!autoEnabled()) { return; } } catch(_) {}
@@ -494,6 +550,32 @@
     try {
       window.__tsu_getPostLog = function(){ try { return (window.__tsu_pk_cache && window.__tsu_pk_cache.postLogs) || []; } catch(_) { return []; } };
     } catch(_) {}
+
+    // transports 正規化ヘルパ（順序維持 + 重複除去 + 許容値のみ + 補完）
+    function __tsu_normalizeTransports(input, attachHint) {
+      try {
+        const allowed = ['internal','hybrid','usb','nfc','ble'];
+        const seen = new Set();
+        const out = [];
+        const pushIfValid = (v) => {
+          try {
+            const s = String(v||'').toLowerCase().trim();
+            if (!s) return;
+            if (!allowed.includes(s)) return;
+            if (seen.has(s)) return;
+            seen.add(s); out.push(s);
+          } catch(_) {}
+        };
+        if (Array.isArray(input)) {
+          for (const v of input) pushIfValid(v);
+        } else if (typeof input === 'string') {
+          String(input).split(',').forEach(pushIfValid);
+        }
+        // authenticatorAttachment からの推測（platform => internal）。元配列の順序は維持しつつ、未含有なら末尾に補完。
+        try { if (attachHint === 'platform' && !seen.has('internal')) { seen.add('internal'); out.push('internal'); } } catch(_) {}
+        return out.join(',');
+      } catch(_) { return ''; }
+    }
 
     // prefer_fallback 中は conditional 利用可否を false に偽装して、サイトの conditional UI 起動を抑止
     function ensureDisableConditionalAvail() {
@@ -1138,44 +1220,8 @@
         if (window.__tsu_pk_is_conditional) { scheduleInflightRescue(); scheduleFinalBypass(); }
       } catch(_) {}
     } catch(_) {}
-    const cborDecodeItem = (u8, offset) => {
-      const len = u8.length;
-      if (offset >= len) throw new Error('OOB');
-      const ib = u8[offset];
-      const major = ib >> 5;
-      let ai = ib & 0x1f;
-      let pos = offset + 1;
-      const readLen = (n) => { if (pos + n > len) throw new Error('OOB'); let v = 0; for (let i=0;i<n;i++) v = (v<<8) | u8[pos+i]; pos += n; return v; };
-      const readAddl = () => { if (ai < 24) return ai; if (ai === 24) return readLen(1); if (ai === 25) return readLen(2); if (ai === 26) return readLen(4); if (ai === 27) { const hi = readLen(4), lo = readLen(4); return hi * 0x100000000 + lo; } throw new Error('indef'); };
-      if (major === 0) { const v = readAddl(); return { value: v, length: pos - offset }; }
-      else if (major === 1) { const v = readAddl(); return { value: -1 - v, length: pos - offset }; }
-      else if (major === 2) { const l = readAddl(); if (pos + l > len) throw new Error('OOB'); const val = u8.slice(pos, pos + l); pos += l; return { value: val, length: pos - offset }; }
-      else if (major === 3) { const l = readAddl(); if (pos + l > len) throw new Error('OOB'); const val = new TextDecoder('utf-8').decode(u8.slice(pos, pos + l)); pos += l; return { value: val, length: pos - offset }; }
-      else if (major === 4) { const l = readAddl(); const arr = []; for (let i=0;i<l;i++) { const it = cborDecodeItem(u8, pos); arr.push(it.value); pos += it.length; } return { value: arr, length: pos - offset }; }
-      else if (major === 5) { const l = readAddl(); const obj = {}; for (let i=0;i<l;i++) { const k = cborDecodeItem(u8, pos); pos += k.length; const v = cborDecodeItem(u8, pos); pos += v.length; obj[k.value] = v.value; } return { value: obj, length: pos - offset }; }
-      else if (major === 6) { readAddl(); const inner = cborDecodeItem(u8, pos); pos += inner.length; return { value: inner.value, length: pos - offset }; }
-      else if (major === 7) { return { value: null, length: pos - offset }; }
-      throw new Error('bad');
-    };
-    const parseAttestation = (u8) => {
-      try {
-        const top = cborDecodeItem(u8, 0).value;
-        const authData = top && top.authData ? toU8(top.authData) : null;
-        if (!authData || authData.length < 37) return null;
-        let p = 0;
-        p += 32;
-        const flags = authData[p]; p += 1;
-        const signCount = ((authData[p] << 24) | (authData[p+1] << 16) | (authData[p+2] << 8) | authData[p+3]) >>> 0; p += 4;
-        const AT = (flags & 0x40) !== 0;
-        if (!AT) return { signCount };
-        p += 16;
-        const credIdLen = (authData[p] << 8) | authData[p+1]; p += 2;
-        p += credIdLen;
-        const pkItem = cborDecodeItem(authData, p);
-        const raw = authData.slice(p, p + pkItem.length);
-        return { signCount, publicKeyRaw: raw };
-      } catch (_) { return null; }
-    };
+    const cborDecodeItem = __tsu_cborDecodeItem;
+    const parseAttestation = __tsu_parseAttestation;
 
     navigator.credentials.create = async function (options) {
       try {
@@ -1204,7 +1250,21 @@
         }
       } catch (_) {}
 
-      const cred = await origCreate(options);
+      // 登録フロー中はキャンセル関連の介入を一時的に無効化（OS UI への干渉を防止）
+      let prevCancel = null, prevFallback = null, prevNoEsc = null;
+      try {
+        try { prevCancel = window.__tsu_cancel_guard_on; window.__tsu_cancel_guard_on = false; } catch(_) {}
+        try { prevFallback = window.__tsu_pk_prefer_fallback; window.__tsu_pk_prefer_fallback = false; } catch(_) {}
+        try { prevNoEsc = window.__tsu_pk_no_esc_dismiss; window.__tsu_pk_no_esc_dismiss = true; } catch(_) {}
+      } catch(_) {}
+      let cred;
+      try {
+        cred = await origCreate(options);
+      } finally {
+        try { if (prevCancel !== null) window.__tsu_cancel_guard_on = prevCancel; } catch(_) {}
+        try { if (prevFallback !== null) window.__tsu_pk_prefer_fallback = prevFallback; } catch(_) {}
+        try { if (prevNoEsc !== null) window.__tsu_pk_no_esc_dismiss = prevNoEsc; } catch(_) {}
+      }
       try {
         if (cred && cred.type === 'public-key') {
           try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch (_) {}
@@ -1212,14 +1272,33 @@
           try {
             if (resp && resp.attestationObject) {
               window.__tsu_pk_cache.attestationB64 = b64u(resp.attestationObject);
-              const parsed = parseAttestation(toU8(resp.attestationObject));
+              const parsed = __tsu_parseAttestation(__tsu_toU8(resp.attestationObject));
               if (parsed) {
                 if (typeof parsed.signCount === 'number') window.__tsu_pk_cache.signCount = parsed.signCount;
                 if (parsed.publicKeyRaw) window.__tsu_pk_cache.publicKeyB64 = b64u(parsed.publicKeyRaw);
               }
             }
           } catch (_) {}
-          try { post({ ...window.__tsu_pk_cache }); } catch (_) {}
+          // Fallback: some browsers expose response.publicKey (base64). Use it if we don't already have publicKeyB64.
+          try {
+            if ((!window.__tsu_pk_cache.publicKeyB64 || !window.__tsu_pk_cache.publicKeyB64.length) && resp && typeof resp.publicKey === 'string' && resp.publicKey) {
+              window.__tsu_pk_cache.publicKeyB64 = String(resp.publicKey);
+            }
+          } catch(_) {}
+          // Transports fallback
+          try {
+            if (resp && Array.isArray(resp.transports) && resp.transports.length) {
+              window.__tsu_pk_cache.transports = resp.transports.join(',');
+            }
+          } catch(_) {}
+          // Ensure rpId and title
+          try { if (!window.__tsu_pk_cache.rpId && location && location.hostname) window.__tsu_pk_cache.rpId = String(location.hostname); } catch(_) {}
+          try { if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title); } catch(_) {}
+          try { console.info('[tsu] injected: posting passkey cache after create', { hasCred: !!window.__tsu_pk_cache.credentialIdB64, hasPub: !!window.__tsu_pk_cache.publicKeyB64 }); } catch(_) {}
+          try {
+            window.postMessage({ __tsu: true, type: 'tsu:passkeyCaptured', cache: { ...window.__tsu_pk_cache } }, '*');
+          } catch (e) { try { console.warn('[tsu] injected: postMessage cache failed', String(e && (e.message||e))); } catch(_) {} }
+          try { console.info('[tsu] injected: posted passkey cache'); } catch(_) {}
         }
       } catch (_) {}
       return cred;
@@ -1229,6 +1308,7 @@
     try { if (!window.__tsu_orig_get) window.__tsu_orig_get = navigator.credentials.get; } catch(_) {}
     try { if (!window.__tsu_orig_create) window.__tsu_orig_create = navigator.credentials.create; } catch(_) {}
     navigator.credentials.create = async function(options){
+      let outOptions = options;
       try {
         try { if (window.__tsu_disable_all_intervention === true) { return origCreate(options); } } catch(_) {}
         let email = '';
@@ -1241,7 +1321,6 @@
         } catch(_) {}
         try { if (!email && window.__tsu_pk_cache && window.__tsu_pk_cache.email) { email = String(window.__tsu_pk_cache.email||''); } } catch(_) {}
         try { if (email) { try { window.__tsu_pk_cache.email = email; } catch(_) {} } } catch(_) {}
-        let outOptions = options;
         try {
           const host = String(location.hostname||'');
           if (/passkey\.io$/i.test(host) && email && options && typeof options === 'object') {
@@ -1267,7 +1346,59 @@
           }
         } catch(_) {}
       } catch(_) {}
-      return origCreate(outOptions);
+      // userHandle を options から事前取得してキャッシュ（ブラウザが assertion で返さない場合の保険）
+      try {
+        const pk = (outOptions && outOptions.publicKey) || outOptions || {};
+        const user = pk && pk.user;
+        const id = user && user.id;
+        if (id) {
+          let buf = null;
+          try {
+            if (id instanceof ArrayBuffer) buf = new Uint8Array(id);
+            else if (ArrayBuffer.isView(id)) buf = new Uint8Array(id.buffer, id.byteOffset, id.byteLength);
+          } catch(_) {}
+          if (buf && buf.byteLength) {
+            try { window.__tsu_pk_cache.userHandleB64 = b64u(buf); } catch(_) {}
+          } else if (typeof id === 'string' && id) {
+            // 既にBase64URL文字列の場合はそのまま採用
+            try { window.__tsu_pk_cache.userHandleB64 = String(id); } catch(_) {}
+          }
+        }
+      } catch(_) {}
+      const cred = await origCreate(outOptions);
+      try {
+        if (cred && cred.type === 'public-key') {
+          try { if (cred && cred.rawId) window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
+          const resp = cred && cred.response;
+          try {
+            if (resp && resp.attestationObject) {
+              try { window.__tsu_pk_cache.attestationB64 = b64u(resp.attestationObject); } catch(_) {}
+              try {
+                const parsed = __tsu_parseAttestation(__tsu_toU8(resp.attestationObject));
+                if (parsed) {
+                  if (typeof parsed.signCount === 'number') window.__tsu_pk_cache.signCount = parsed.signCount;
+                  if (parsed.publicKeyRaw) window.__tsu_pk_cache.publicKeyB64 = b64u(parsed.publicKeyRaw);
+                }
+              } catch(_) {}
+            } else if (resp && typeof resp.publicKey === 'string' && resp.publicKey) {
+              // Fallback: some browsers expose response.publicKey (base64)
+              try { window.__tsu_pk_cache.publicKeyB64 = String(resp.publicKey); } catch(_) {}
+            }
+          } catch(_) {}
+          // transports（正規化 + 推測）
+          try {
+            const attach = cred && cred.authenticatorAttachment;
+            const norm = __tsu_normalizeTransports(resp && resp.transports, attach);
+            if (norm) window.__tsu_pk_cache.transports = norm;
+          } catch(_) {}
+          // rpId/title fallback
+          try { if (!window.__tsu_pk_cache.rpId && location && location.hostname) window.__tsu_pk_cache.rpId = String(location.hostname); } catch(_) {}
+          try { if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title); } catch(_) {}
+          try { console.info('[tsu] injected: posting passkey cache after create (inline)', { hasCred: !!window.__tsu_pk_cache.credentialIdB64, hasPub: !!window.__tsu_pk_cache.publicKeyB64 }); } catch(_) {}
+          try { post({ ...window.__tsu_pk_cache }); } catch(_) {}
+        }
+      } catch(_) {}
+      return cred;
     };
     navigator.credentials.get = async function (options) {
       try {
@@ -1310,8 +1441,12 @@
           if (!autoEnabled()) {
             const allowed = conditionalAllowedNow();
             if (!allowed && window.__tsu_pk_prefer_fallback !== true && window.__tsu_pk_ours !== true) {
-              console.info('[tsu] injected: suppress get (not in allow window)');
-              throw new DOMException('Suppressed by policy (not in allow window)', 'AbortError');
+              if (conditionalGraceActive()) {
+                console.info('[tsu] injected: allow get during conditional grace window');
+              } else {
+                console.info('[tsu] injected: suppress get (not in allow window)');
+                throw new DOMException('Suppressed by policy (not in allow window)', 'AbortError');
+              }
             }
           }
         } catch(_) {}
@@ -1321,8 +1456,12 @@
             const okUntil = Number(window.__tsu_cond_ok_until || 0);
             const ok = okUntil && Date.now() < okUntil;
             if (!ok && window.__tsu_pk_prefer_fallback !== true && !autoEnabled()) {
-              console.info('[tsu] injected: suppress conditional get (not in allow window)');
-              throw new DOMException('Conditional UI suppressed', 'AbortError');
+              if (conditionalGraceActive()) {
+                console.info('[tsu] injected: allow conditional get during grace window');
+              } else {
+                console.info('[tsu] injected: suppress conditional get (not in allow window)');
+                throw new DOMException('Conditional UI suppressed', 'AbortError');
+              }
             }
           }
         } catch(_) {}
@@ -1352,7 +1491,7 @@
         // strict 窓口中は当方以外の get() をブロック
         try {
           const strictSince = Number(window.__tsu_pk_force_strict_ts || 0);
-          const strictActive = !!strictSince && (Date.now() - strictSince) < 10000; // フォールバック直後の get は厳格（10秒）
+          const strictActive = !!strictSince && (Date.now() - strictSince) < 15000; // フォールバック直後の get は厳格（15秒）
           // 既に get 実行中であれば、再入（自他問わず）を遮断（Cancel連鎖を避ける）。ただし Takeover は許可
           const depth = Number(window.__tsu_pk_get_depth || 0);
           if (strictActive && depth > 0) {
@@ -1363,18 +1502,19 @@
               throw new DOMException('Blocked re-entrant during strict window', 'AbortError');
             }
           }
-          if (strictActive && window.__tsu_pk_prefer_fallback === true && window.__tsu_pk_ours !== true) {
+          // 条件付きUI検出直後（strictActive）では、非所有の get を抑止して競合キャンセルを防止
+          if (strictActive && (window.__tsu_pk_prefer_fallback === true || window.__tsu_pk_is_conditional === true) && window.__tsu_pk_ours !== true) {
             console.info('[tsu] injected: blocking non-owned get during strict window');
             throw new DOMException('Blocked during strict window', 'AbortError');
           }
         } catch(_) {}
         try {
           window.__tsu_pk_is_conditional = !!isConditional;
-          if (isConditional) { window.__tsu_pk_cond_detect_ts = Date.now(); nudgeConditionalUI(); }
+          if (isConditional) { window.__tsu_pk_cond_detect_ts = Date.now(); window.__tsu_pk_force_strict_ts = Date.now(); nudgeConditionalUI(); }
         } catch(_) {}
         if (pub) {
           try {
-            if (pub.rp && pub.rp.id) window.__tsu_pk_cache.rpId = String(pub.rp.id);
+            if (pub.rpId) window.__tsu_pk_cache.rpId = String(pub.rpId);
             if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title);
             // 優先 credential を allowCredentials へ先頭追加
             try {
@@ -1492,9 +1632,15 @@
         try { console.info('[tsu] injected: navigator.credentials.get resolved'); } catch(_) {}
         try { window.__tsu_pk_last_resolved_ts = Date.now(); } catch(_) {}
       } catch(e) {
-        try { console.warn('[tsu] injected: navigator.credentials.get error', e && e.name, e && e.message); } catch(_) {}
+        try {
+          const __msg = String((e && (e.message||'')) || '');
+          const __isBrowserCancelForNew = (e && e.name) === 'AbortError' && /Cancelling\s+existing\s+WebAuthn\s+API\s+call\s+for\s+new\s+one/i.test(__msg);
+          (__isBrowserCancelForNew ? console.info : console.warn).call(console, '[tsu] injected: navigator.credentials.get error', e && e.name, e && e.message);
+        } catch(_) {}
         // AbortError の場合、直近で preferred が設定されていれば一度だけリトライ
         const isAbort = (e && e.name) === 'AbortError';
+        const msg = String((e && (e.message||'')) || '');
+        const isBrowserCancelForNew = isAbort && /Cancelling\s+existing\s+WebAuthn\s+API\s+call\s+for\s+new\s+one/i.test(msg);
         const isNotAllowed = (e && e.name) === 'NotAllowedError';
         const prefSetTs = Number(window.__tsu_pk_pref_set_ts || 0);
         const now = Date.now();
@@ -1502,6 +1648,28 @@
         const appliedTs = Number(window.__tsu_pk_pref_applied_ts || 0);
         const appliedRecent = appliedTs && (now - appliedTs) < 2000;
         const lastStart = Number(window.__tsu_pk_last_ts || 0);
+        // ブラウザ由来の競合キャンセルは、アグレッシブ設定に関わらず一度だけサイレント再試行
+        if (isBrowserCancelForNew && !window.__tsu_pk_retry_on_browser_cancel_done) {
+          try { console.info('[tsu] injected: handling browser cancellation for new WebAuthn call (silent retry)'); } catch(_) {}
+          try { window.__tsu_pk_retry_on_browser_cancel_done = true; } catch(_) {}
+          try { window.__tsu_cancel_guard_on = true; } catch(_) {}
+          try { ensureDisableConditionalAvail(); } catch(_) {}
+          await sleep(800);
+          const latestStart = Number(window.__tsu_pk_last_ts || 0);
+          if (!latestStart || latestStart <= lastStart) {
+            try { window.__tsu_pk_ours = true; } catch(_) {}
+            let retryOpts = options;
+            try { retryOpts = Object.assign({}, options || {}); retryOpts.mediation = 'required'; } catch(_) {}
+            cred = await origGet(retryOpts);
+            try { console.info('[tsu] injected: navigator.credentials.get resolved (browser-cancel retry)'); } catch(_) {}
+            try { window.__tsu_pk_last_resolved_ts = Date.now(); } catch(_) {}
+            try { setTimeout(() => { try { window.__tsu_cancel_guard_on = false; } catch(_) {} }, 2000); } catch(_) {}
+            return cred;
+          } else {
+            try { console.info('[tsu] injected: skip browser-cancel retry, new get started'); } catch(_) {}
+            try { setTimeout(() => { try { window.__tsu_cancel_guard_on = false; } catch(_) {} }, 1500); } catch(_) {}
+          }
+        }
         // conditional mediation 中でも再試行は許可（ユーザー操作直後の文脈で UI を確実に提示するため）
         // 監視: 短時間に複数の AbortError が発生した場合の救済
         try {
@@ -1525,7 +1693,7 @@
             setTimeout(() => { try { window.dispatchEvent(new Event('tsu:triggerPasskeyLoginSync')); } catch(_) {} }, 0);
           }
         } catch(_) {}
-        if (isAbort && (prefRecent || appliedRecent) && !window.__tsu_pk_get_retried) {
+        if (isAbort && (prefRecent || appliedRecent) && !window.__tsu_pk_get_retried && window.__tsu_aggressive_retry === true) {
           try { console.info('[tsu] injected: considering silent retry after AbortError', { prefRecent, appliedRecent }); } catch(_) {}
           try { window.__tsu_pk_get_retried = true; } catch(_) {}
           // リトライ保護: 短時間の cancel-guard と prefer_fallback を有効化し、conditional を抑止
@@ -1560,7 +1728,7 @@
         } else {
           throw e;
         }
-      } finally { try { window.__tsu_pk_get_inflight = false; window.__tsu_pk_inflight_since = 0; window.__tsu_pk_get_retried = false; window.__tsu_pk_ours = false; window.__tsu_pk_takeover = false; window.__tsu_pk_get_depth = Math.max(0, Number(window.__tsu_pk_get_depth||0) - 1); } catch(_) {} }
+      } finally { try { window.__tsu_pk_get_inflight = false; window.__tsu_pk_inflight_since = 0; window.__tsu_pk_get_retried = false; window.__tsu_pk_ours = false; window.__tsu_pk_takeover = false; window.__tsu_pk_get_depth = Math.max(0, Number(window.__tsu_pk_get_depth||0) - 1); } catch(_) {} try { if (window.__tsu_cancel_guard_on) { setTimeout(() => { try { window.__tsu_cancel_guard_on = false; } catch(_) {} }, 800); } } catch(_) {} }
       // 成功時の詳細ログと送信キャッシュ
       try {
         if (cred && cred.type === 'public-key') {
@@ -1577,6 +1745,17 @@
             signature: cred.response && cred.response.signature && b64u(cred.response.signature),
           };
           console.info('[tsu] injected: navigator.credentials.get resolved and cached');
+          // ブリッジ経由の autosave を確実に発火させるため、主要キーをキャッシュに反映して通知
+          try { if (cred && cred.rawId) window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
+          try { if (cred && cred.response && cred.response.userHandle) window.__tsu_pk_cache.userHandleB64 = b64u(cred.response.userHandle); } catch(_) {}
+          // transports（正規化 + 推測）
+          try {
+            const resp = cred && cred.response;
+            const attach = cred && cred.authenticatorAttachment;
+            const norm = __tsu_normalizeTransports(resp && resp.transports, attach);
+            if (norm) window.__tsu_pk_cache.transports = norm;
+          } catch(_) {}
+          try { if (__tsu_shouldStore()) post({ ...window.__tsu_pk_cache }); } catch(_) {}
         }
       } catch(_) {}
       return cred;
