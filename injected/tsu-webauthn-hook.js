@@ -1309,6 +1309,114 @@
           } catch(_) {}
           // Ensure rpId and title
           try { if (!window.__tsu_pk_cache.rpId && location && location.hostname) window.__tsu_pk_cache.rpId = String(location.hostname); } catch(_) {}
+          // Try to pick a better title from current inputs; exclude password; prefer email/phone
+          try {
+            const looksEmail = (s) => { try { return /.+@.+\..+/.test(String(s||'')); } catch(_) { return false; } };
+            const looksPhone = (s) => { try { return /^[+]?[-0-9()\s]{8,}$/.test(String(s||'').replace(/[\u3000\s]+/g,' ')); } catch(_) { return false; } };
+            const host = (location && location.hostname) ? String(location.hostname) : '';
+            let t = '';
+            try {
+              const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
+              if (ax) t = ax;
+            } catch(_) {}
+            if (!t) {
+              try {
+                const ae = document && document.activeElement;
+                if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
+                  const tp = (ae.getAttribute && (ae.getAttribute('type')||'')).toLowerCase();
+                  if (tp !== 'password') {
+                    const v = String(ae.value || '').trim();
+                    if (v) t = v;
+                  }
+                }
+              } catch(_) {}
+            }
+            if (!t) {
+              try {
+                const sels = [
+                  'input[autocomplete="username"]',
+                  'input[autocomplete="email"]',
+                  'input[autocomplete="tel"]',
+                  'input[inputmode="tel"]',
+                  'input[type="email"]',
+                  'input[type="tel"]',
+                  'input[name*="email" i]',
+                  'input[id*="email" i]',
+                  'input[name*="user" i]',
+                  'input[name*="mail" i]',
+                  'input[name*="tel" i]',
+                  'input[name*="phone" i]',
+                  'input[id*="user" i]',
+                  'input[id*="mail" i]',
+                  'input[id*="tel" i]',
+                  'input[id*="phone" i]',
+                  'input[type="text"]'
+                ];
+                for (const sel of sels) {
+                  let el = document && document.querySelector && document.querySelector(sel);
+                  if (!el) {
+                    try {
+                      const hosts = document.querySelectorAll('*');
+                      for (const h of hosts) {
+                        try { if (h && h.shadowRoot) { const e2 = h.shadowRoot.querySelector(sel); if (e2) { el = e2; break; } } } catch(_) {}
+                      }
+                    } catch(_) {}
+                  }
+                  if (!el) {
+                    try {
+                      const ifs = document.querySelectorAll('iframe');
+                      for (const f of ifs) {
+                        try { const d = f && f.contentDocument; const e3 = d && d.querySelector && d.querySelector(sel); if (e3) { el = e3; break; } } catch(_) {}
+                      }
+                    } catch(_) {}
+                  }
+                  if (el && typeof el.value === 'string') {
+                    const tp = (el.getAttribute && (el.getAttribute('type')||'')).toLowerCase();
+                    if (tp === 'password') continue;
+                    const v = String(el.value || '').trim();
+                    if (v) { t = v; break; }
+                  }
+                }
+              } catch(_) {}
+            }
+            if (!t) {
+              try {
+                const isProbablyVisible = (el) => {
+                  try {
+                    const r = el.getBoundingClientRect();
+                    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+                    return !!(r && r.width > 0 && r.height > 0 && (!style || (style.visibility !== 'hidden' && style.display !== 'none')));
+                  } catch(_) { return true; }
+                };
+                const nodes = Array.prototype.slice.call(document.querySelectorAll('input, textarea'));
+                const vals = nodes
+                  .filter(el => el && typeof el.value === 'string' && isProbablyVisible(el) && ((el.getAttribute('type')||'').toLowerCase() !== 'password'))
+                  .map(el => String(el.value || '').trim())
+                  .filter(Boolean);
+                if (/amazon\.co\.jp$/i.test(host)) {
+                  const phoneVal = vals.find(looksPhone);
+                  if (phoneVal) t = phoneVal;
+                  if (!t) { const emailVal = vals.find(looksEmail); if (emailVal) t = emailVal; }
+                } else {
+                  const emailVal = vals.find(looksEmail);
+                  if (emailVal) t = emailVal;
+                  if (!t) { const phoneVal = vals.find(looksPhone); if (phoneVal) t = phoneVal; }
+                }
+                if (!t && vals.length) t = vals[0];
+              } catch(_) {}
+            }
+            // Avoid domain-like strings (host/rp name) when coming from inputs
+            try {
+              const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+              const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
+              if (t && (String(t).toLowerCase() === host || (isDomainLike(t) && String(t).toLowerCase() === host))) {
+                t = '';
+              }
+            } catch(_) {}
+            if (t) {
+              window.__tsu_pk_cache.title = t;
+            }
+          } catch(_) {}
           try { if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title); } catch(_) {}
           try { console.info('[tsu] injected: posting passkey cache after create', { hasCred: !!window.__tsu_pk_cache.credentialIdB64, hasPub: !!window.__tsu_pk_cache.publicKeyB64 }); } catch(_) {}
           try {
@@ -1362,6 +1470,20 @@
           }
         } catch(_) {}
       } catch(_) {}
+      // Prefer title from options.user (displayName/name) when available (but avoid domain-like/rpId)
+      try {
+        const pk = (outOptions && outOptions.publicKey) || outOptions || {};
+        const user = pk && pk.user;
+        const raw = user && (user.displayName || user.name);
+        const t1 = (raw && String(raw).trim()) || '';
+        try { window.__tsu_pk_cache.userTitleCandidate = t1; } catch(_) {}
+        const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+        const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
+        const safe = !!(t1 && t1.toLowerCase() !== host && !isDomainLike(t1));
+        if (safe) {
+          try { window.__tsu_pk_cache.title = t1; } catch(_) {}
+        }
+      } catch(_) {}
       // userHandle を options から事前取得してキャッシュ（ブラウザが assertion で返さない場合の保険）
       try {
         const pk = (outOptions && outOptions.publicKey) || outOptions || {};
@@ -1409,6 +1531,105 @@
           } catch(_) {}
           // rpId/title fallback
           try { if (!window.__tsu_pk_cache.rpId && location && location.hostname) window.__tsu_pk_cache.rpId = String(location.hostname); } catch(_) {}
+          try {
+            const looksEmail = (s) => { try { return /.+@.+\..+/.test(String(s||'')); } catch(_) { return false; } };
+            const looksPhone = (s) => { try { return /^[+]?[-0-9()\s]{8,}$/.test(String(s||'').replace(/[\u3000\s]+/g,' ')); } catch(_) { return false; } };
+            const host = (location && location.hostname) ? String(location.hostname) : '';
+            let t = '';
+            try {
+              const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
+              if (ax) t = ax;
+            } catch(_) {}
+            if (!t) {
+              try {
+                const ae = document && document.activeElement;
+                if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
+                  const tp = (ae.getAttribute && (ae.getAttribute('type')||'')).toLowerCase();
+                  if (tp !== 'password') {
+                    const v = String(ae.value || '').trim();
+                    if (v) t = v;
+                  }
+                }
+              } catch(_) {}
+            }
+            if (!t) {
+              try {
+                const sels = [
+                  'input[autocomplete="username"]',
+                  'input[autocomplete="email"]',
+                  'input[autocomplete="tel"]',
+                  'input[inputmode="tel"]',
+                  'input[type="email"]',
+                  'input[type="tel"]',
+                  'input[name*="email" i]',
+                  'input[id*="email" i]',
+                  'input[name*="user" i]',
+                  'input[name*="mail" i]',
+                  'input[name*="tel" i]',
+                  'input[name*="phone" i]',
+                  'input[id*="user" i]',
+                  'input[id*="mail" i]',
+                  'input[id*="tel" i]',
+                  'input[id*="phone" i]',
+                  'input[type="text"]'
+                ];
+                for (const sel of sels) {
+                  let el = document && document.querySelector && document.querySelector(sel);
+                  if (!el) {
+                    try {
+                      const hosts = document.querySelectorAll('*');
+                      for (const h of hosts) {
+                        try { if (h && h.shadowRoot) { const e2 = h.shadowRoot.querySelector(sel); if (e2) { el = e2; break; } } } catch(_) {}
+                      }
+                    } catch(_) {}
+                  }
+                  if (!el) {
+                    try {
+                      const ifs = document.querySelectorAll('iframe');
+                      for (const f of ifs) {
+                        try { const d = f && f.contentDocument; const e3 = d && d.querySelector && d.querySelector(sel); if (e3) { el = e3; break; } } catch(_) {}
+                      }
+                    } catch(_) {}
+                  }
+                  if (el && typeof el.value === 'string') {
+                    const tp = (el.getAttribute && (el.getAttribute('type')||'')).toLowerCase();
+                    if (tp === 'password') continue;
+                    const v = String(el.value || '').trim();
+                    if (v) { t = v; break; }
+                  }
+                }
+              } catch(_) {}
+            }
+            if (!t) {
+              try {
+                const isProbablyVisible = (el) => {
+                  try {
+                    const r = el.getBoundingClientRect();
+                    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+                    return !!(r && r.width > 0 && r.height > 0 && (!style || (style.visibility !== 'hidden' && style.display !== 'none')));
+                  } catch(_) { return true; }
+                };
+                const nodes = Array.prototype.slice.call(document.querySelectorAll('input, textarea'));
+                const vals = nodes
+                  .filter(el => el && typeof el.value === 'string' && isProbablyVisible(el) && ((el.getAttribute('type')||'').toLowerCase() !== 'password'))
+                  .map(el => String(el.value || '').trim())
+                  .filter(Boolean);
+                if (/amazon\.co\.jp$/i.test(host)) {
+                  const phoneVal = vals.find(looksPhone);
+                  if (phoneVal) t = phoneVal;
+                  if (!t) { const emailVal = vals.find(looksEmail); if (emailVal) t = emailVal; }
+                } else {
+                  const emailVal = vals.find(looksEmail);
+                  if (emailVal) t = emailVal;
+                  if (!t) { const phoneVal = vals.find(looksPhone); if (phoneVal) t = phoneVal; }
+                }
+                if (!t && vals.length) t = vals[0];
+              } catch(_) {}
+            }
+            if (t) {
+              window.__tsu_pk_cache.title = t;
+            }
+          } catch(_) {}
           try { if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title); } catch(_) {}
           try { console.info('[tsu] injected: posting passkey cache after create (inline)', { hasCred: !!window.__tsu_pk_cache.credentialIdB64, hasPub: !!window.__tsu_pk_cache.publicKeyB64 }); } catch(_) {}
           try { post({ ...window.__tsu_pk_cache }); } catch(_) {}

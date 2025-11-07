@@ -195,7 +195,7 @@
                 const waitMs = 20000;
                 if (window.tsupasswd && typeof window.tsupasswd.waitPasskey === 'function') {
                   window.tsupasswd.waitPasskey(waitMs)
-                    .then(() => { try { savePasskeySilently(anchor); } catch(_) {} })
+                    .then(() => { /* autosave via bridge; do not call directly */ })
                     .catch(() => { try { if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, extractPasskeyFromPage(document)); } } catch(_) {} });
                 } else {
                   // フック未準備時はフォールバック
@@ -223,18 +223,8 @@
           const now = Date.now();
           if (last && (now - last) < 5000) {
             try { console.info('[tsu] passkey save dedup skip (recent)'); } catch(_) {}
-            // 保存はスキップするが、候補即時反映のため直近キャッシュへは追加
-            try {
-              const rpTmp = String(raw.rp || (location && location.hostname) || '');
-              const ttlTmp = String(raw.title || (document && document.title) || '');
-              window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
-              window.__tsu_pk_recent_entries.unshift({ title: ttlTmp, rp: rpTmp, cred: keyNow });
-              if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
-            } catch(_) {}
             return;
           }
-          // 先にマークしてレースを防ぐ
-          window.__tsu_saved_cred[keyNow] = now;
         }
       } catch(_) {}
       const rpId = raw.rp || (location && location.hostname) || '';
@@ -242,6 +232,25 @@
       try {
         const pick = () => {
           try {
+            // Manual override from extension/page config
+            try {
+              const ov = (window.tsupasswd && typeof window.tsupasswd.titleOverride === 'string') ? String(window.tsupasswd.titleOverride).trim() : '';
+              if (ov) return ov;
+            } catch(_) {}
+            // Prefer injected page cache title if available
+            try {
+              const tcache = (window.__tsu_pk_cache && window.__tsu_pk_cache.title) ? String(window.__tsu_pk_cache.title).trim() : '';
+              if (tcache) return tcache;
+            } catch(_) {}
+            // Or prefer userTitleCandidate from options.user if present and safe
+            try {
+              const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
+              if (cand) {
+                const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
+                if (cand.toLowerCase() !== host && !isDomainLike(cand)) return cand;
+              }
+            } catch(_) {}
             const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
             if (ax) return ax;
           } catch(_) {}
@@ -250,6 +259,17 @@
             if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
               const v = String(ae.value || '').trim();
               if (v) return v;
+              // placeholder fallback
+              try { const ph = String(ae.getAttribute && ae.getAttribute('placeholder') || '').trim(); if (ph) return ph; } catch(_) {}
+              // label fallback
+              try {
+                const id = ae.id && String(ae.id);
+                if (id) {
+                  const lb = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                  const txt = lb && (lb.textContent||'').trim();
+                  if (txt) return txt;
+                }
+              } catch(_) {}
             }
           } catch(_) {}
           try {
@@ -257,6 +277,16 @@
             if (cand && cand.element && typeof cand.element.value === 'string') {
               const v = String(cand.element.value).trim();
               if (v) return v;
+              // placeholder/label fallback for candidate
+              try { const ph = String(cand.element.getAttribute && cand.element.getAttribute('placeholder') || '').trim(); if (ph) return ph; } catch(_) {}
+              try {
+                const id = cand.element.id && String(cand.element.id);
+                if (id) {
+                  const lb = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                  const txt = lb && (lb.textContent||'').trim();
+                  if (txt) return txt;
+                }
+              } catch(_) {}
             }
           } catch(_) {}
           try {
@@ -284,6 +314,15 @@
               if (el && typeof el.value === 'string') {
                 const v = String(el.value || '').trim();
                 if (v) return v;
+                try { const ph = String(el.getAttribute && el.getAttribute('placeholder') || '').trim(); if (ph) return ph; } catch(_) {}
+                try {
+                  const id = el.id && String(el.id);
+                  if (id) {
+                    const lb = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                    const txt = lb && (lb.textContent||'').trim();
+                    if (txt) return txt;
+                  }
+                } catch(_) {}
               }
             }
           } catch(_) {}
@@ -322,9 +361,27 @@
           return '';
         };
         title = pick();
+        // sanitize: avoid using plain host/domain as title
+        try {
+          const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+          const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
+          if (title && (String(title).toLowerCase() === host || (isDomainLike(title) && String(title).toLowerCase() === host))) {
+            title = '';
+          }
+        } catch(_) {}
       } catch(_) {}
-      if (!title) { title = String(raw.title || (document && document.title) || ''); }
+      if (!title) { title = String(raw.title || ''); }
       try { console.info('[tsu] passkey title decide', { fromInput: !!(title && title.length), title }); } catch(_) {}
+      // If title still empty after sanitization, fallback to userTitleCandidate/doc title/rpId to ensure saving proceeds
+      if (!title) {
+        try {
+          const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
+          if (cand) title = cand;
+        } catch(_) {}
+        if (!title) { try { if (document && document.title) title = String(document.title); } catch(_) {}
+        }
+        if (!title) { title = String(raw.rp || rpId || ''); }
+      }
       const detail = (function(){
         const cntStr = raw.count != null ? String(raw.count) : '';
         const cntNum = (cntStr && !isNaN(Number(cntStr))) ? Number(cntStr) : undefined;
@@ -381,8 +438,13 @@
         // 任意オプション
         if (typeof detail.signCount === 'number') { args1.push('--sign-count', String(detail.signCount)); }
         if (detail.transports) { args1.push('--transports', String(detail.transports)); }
-        if (finalTitle) { args1.push('--title', String(finalTitle)); }
-        try { console.info('[tsu] passkey save args', { args: args1 }); } catch(_) {}
+        if (finalTitle) {
+          const t = String(finalTitle);
+          args1.push('--title', t);
+          // 一部ホスト実装互換: --name も併記
+          args1.push('--name', t);
+        }
+        try { console.info('[tsu] passkey save args', { title: String(finalTitle||''), args: args1 }); } catch(_) {}
         sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: args1 }, (resp) => {
           try { console.info('[tsu] passkey save end', resp); } catch(_) {}
           try { window.__tsu_last_save_ended = Date.now(); } catch(_) {}
@@ -428,8 +490,8 @@
           try {
             const titles = parseTitles(resp);
             const baseTitle = (payload.title || payload.rpId || '');
-            if (Array.isArray(titles) && titles.includes(String(baseTitle))) { try { showToast('同名のタイトルが既に存在するため保存しません'); } catch(_) {} return; }
-            doSave(baseTitle);
+            const finalTitle = (Array.isArray(titles) && titles.length) ? uniqueTitle(baseTitle, titles) : baseTitle;
+            doSave(finalTitle);
           } catch(_) { doSave(payload.title); }
         });
       } catch(_) {
@@ -497,14 +559,14 @@
             const det = d || extractPasskeyFromPage(document) || {};
             const hasCred = !!(det.credentialIdB64 || det.cred);
             const hasPub = !!(det.publicKeyB64 || det.pub);
-            if (hasCred && hasPub) {
+            if (false && hasCred && hasPub) {
               const f = (window.savePasskeySilentlyRef || (window.tsupasswd && window.tsupasswd.savePasskeySilently) || (typeof savePasskeySilently === 'function' && savePasskeySilently));
               if (typeof f === 'function') {
                 // 二重保存防止: 直近開始から短時間は再起動しない
                 const now = Date.now();
                 const started = Number(window.__tsu_last_save_started || 0);
                 if (!started || (now - started) > 1500) {
-                  setTimeout(() => { try { f(null, det); } catch(_) {} }, 60);
+                  setTimeout(() => { try { f(null, det); } catch(_) {} }, 120);
                 }
               }
             }
@@ -568,7 +630,8 @@
           window.__tsu_pk_cache = Object.assign(window.__tsu_pk_cache || {}, data.cache || {});
           // コンテンツ側でもイベント発火
           try {
-            const detail = extractPasskeyFromPage(document);
+            // 受信した cache を優先して detail を構築（不足分は extract で補完）
+            const detail = Object.assign({}, (data && data.cache) || {}, extractPasskeyFromPage(document) || {});
             window.dispatchEvent(new CustomEvent('tsu:passkeyCaptured', { detail }));
             try { window.__tsu_passkey_active = true; } catch(_) {}
             // 取得時にサイレント保存を自動実行（抑止せず常にトリガー）
@@ -591,7 +654,7 @@
                       try { console.info('[tsu] autosave(passkey) skip: missing publicKey/credential'); } catch(_) {}
                     }
                   } catch(e) { try { console.info('[tsu] autosave(passkey) error', String(e && e.message || e)); } catch(_) {} }
-                }, 120);
+                }, 350);
                 // ウォッチドッグ: 一定時間内に enter マーカーが更新されなければフォールバック
                 setTimeout(() => {
                   try {
@@ -604,6 +667,16 @@
                       try {
                         const pick = () => {
                           try {
+                            // Manual override from extension/page config
+                            try {
+                              const ov = (window.tsupasswd && typeof window.tsupasswd.titleOverride === 'string') ? String(window.tsupasswd.titleOverride).trim() : '';
+                              if (ov) return ov;
+                            } catch(_) {}
+                            // Prefer injected page cache title if available
+                            try {
+                              const tcache = (window.__tsu_pk_cache && window.__tsu_pk_cache.title) ? String(window.__tsu_pk_cache.title).trim() : '';
+                              if (tcache) return tcache;
+                            } catch(_) {}
                             const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
                             if (ax) return ax;
                           } catch(_) {}
@@ -612,6 +685,17 @@
                             if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
                               const v = String(ae.value || '').trim();
                               if (v) return v;
+                              // placeholder fallback
+                              try { const ph = String(ae.getAttribute && ae.getAttribute('placeholder') || '').trim(); if (ph) return ph; } catch(_) {}
+                              // label fallback
+                              try {
+                                const id = ae.id && String(ae.id);
+                                if (id) {
+                                  const lb = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                                  const txt = lb && (lb.textContent||'').trim();
+                                  if (txt) return txt;
+                                }
+                              } catch(_) {}
                             }
                           } catch(_) {}
                           try {
@@ -619,6 +703,16 @@
                             if (cand && cand.element && typeof cand.element.value === 'string') {
                               const v = String(cand.element.value).trim();
                               if (v) return v;
+                              // placeholder/label fallback for candidate
+                              try { const ph = String(cand.element.getAttribute && cand.element.getAttribute('placeholder') || '').trim(); if (ph) return ph; } catch(_) {}
+                              try {
+                                const id = cand.element.id && String(cand.element.id);
+                                if (id) {
+                                  const lb = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                                  const txt = lb && (lb.textContent||'').trim();
+                                  if (txt) return txt;
+                                }
+                              } catch(_) {}
                             }
                           } catch(_) {}
                           try {
@@ -634,15 +728,41 @@
                               if (el && typeof el.value === 'string') {
                                 const v = String(el.value).trim();
                                 if (v) return v;
+                                try { const ph = String(el.getAttribute && el.getAttribute('placeholder') || '').trim(); if (ph) return ph; } catch(_) {}
+                                try {
+                                  const id = el.id && String(el.id);
+                                  if (id) {
+                                    const lb = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                                    const txt = lb && (lb.textContent||'').trim();
+                                    if (txt) return txt;
+                                  }
+                                } catch(_) {}
                               }
                             }
                           } catch(_) {}
                           return '';
                         };
                         title = pick();
+                        // sanitize: avoid using plain host/domain as title
+                        try {
+                          const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                          const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
+                          if (title && (String(title).toLowerCase() === host || (isDomainLike(title) && String(title).toLowerCase() === host))) {
+                            title = '';
+                          }
+                        } catch(_) {}
                       } catch(_) {}
-                      if (!title) { title = String(raw.title || (document && document.title) || ''); }
+                      if (!title) { title = String(raw.title || ''); }
                       try { console.info('[tsu] passkey title decide(fallback)', { fromInput: !!(title && title.length), title }); } catch(_) {}
+                      if (!title) {
+                        try {
+                          const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
+                          if (cand) title = cand;
+                        } catch(_) {}
+                        if (!title) { try { if (document && document.title) title = String(document.title); } catch(_) {}
+                        }
+                        if (!title) { title = String(raw.rp || rpId || ''); }
+                      }
                       const det = {
                         rp: String(raw.rp || rpId || ''),
                         cred: String(raw.cred || raw.credentialIdB64 || ''),
