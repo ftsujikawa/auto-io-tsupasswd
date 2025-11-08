@@ -406,7 +406,50 @@
       const hasCred = !!detail.credentialIdB64;
       const hasPub = !!detail.publicKeyB64;
       if (!hasCred || !hasPub) {
-        try { console.info('[tsu] passkey save skip: missing credentialIdB64'); } catch(_) {}
+        try { console.info('[tsu] passkey save precheck: missing field(s)', { hasCred, hasPub }); } catch(_) {}
+        // Fallback: if attestation is available, delegate to native host (SAVE_TSUPASSWD) to derive publicKey from attestationObject
+        try {
+          const attB64 = String((raw && raw.att) || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || '') || '';
+          if (hasCred && !hasPub && attB64) {
+            const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
+            const entry = {
+              title: String(detail.title || ''),
+              url: '',
+              username: '',
+              password: '',
+              note: '',
+              credential: {
+                rawId: String(detail.credentialIdB64 || ''),
+                response: { attestationObject: String(attB64) },
+                // transport list if available (comma separated -> array)
+                transports: (function(){ try { return detail.transports ? String(detail.transports).split(',').filter(Boolean) : undefined; } catch(_) { return undefined; } })()
+              },
+              meta: {
+                rpId: String(payload.rpId || ''),
+                userHandle: String(detail.userHandleB64 || ''),
+                origin: (function(){ try { return (location && location.origin) ? String(location.origin) : ''; } catch(_) { return ''; } })()
+              }
+            };
+            try { console.info('[tsu] passkey save fallback via host(SAVE)', { hasAtt: true }); } catch(_) {}
+            safeSendMessage({ type: 'SAVE_TSUPASSWD', host, entry }, (resp) => {
+              try {
+                const ok = !!(resp && (resp.ok === true || (resp.data && resp.data.ok === true)));
+                if (ok) {
+                  try { showToast('保存しました'); } catch(_) {}
+                  try {
+                    window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
+                    window.__tsu_pk_recent_entries.unshift({ title: entry.title || '', rp: entry.meta.rpId || '', cred: detail.credentialIdB64 || '' });
+                    if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
+                  } catch(_) {}
+                } else {
+                  try { showToast('保存に失敗しました'); } catch(_) {}
+                }
+              } catch(_) {}
+            });
+            return;
+          }
+        } catch(_) {}
+        try { console.info('[tsu] passkey save skip: insufficient data and no attestation fallback'); } catch(_) {}
         try { if (!(isPasskeyEnvOn() || isPasskeyActiveNow())) { openPasskeyDialog(anchor, raw); } } catch(_) {}
         return;
       }
@@ -506,14 +549,28 @@
   // 送信前に拡張の生存確認（PING）が通ったら本送信
   const sendWithPreflight = function(payload, cb) {
     try {
-      safeSendMessage({ type: 'PING' }, (pong) => {
-        if (!(pong && pong.ok)) {
-          try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
-          try { console.info('[tsu] preflight PING failed'); } catch(_) {}
-          return cb && cb({ ok: false, error: 'ping_failed' });
-        }
-        safeSendMessage(payload, cb);
-      });
+      const maxAttempts = 5;
+      const tryPing = (attempt) => {
+        safeSendMessage({ type: 'PING' }, (pong) => {
+          if (pong && pong.ok) {
+            return safeSendMessage(payload, cb);
+          }
+          if (attempt < maxAttempts) {
+            const delay = Math.min(200 * Math.pow(2, attempt), 2000);
+            try { console.info('[tsu] preflight PING failed: retry', { attempt, delay }); } catch(_) {}
+            return setTimeout(() => tryPing(attempt + 1), delay);
+          }
+          // 最後の手段: PINGが通らなくても本送信を試みる
+          try { console.info('[tsu] preflight PING giveup: try payload anyway'); } catch(_) {}
+          safeSendMessage(payload, (resp) => {
+            if (!(resp && resp.ok)) {
+              try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
+            }
+            try { cb && cb(resp); } catch(_) {}
+          });
+        });
+      };
+      tryPing(0);
     } catch (_) {
       try { showToast('拡張が応答しません。ページを再読み込みしてください'); } catch(_) {}
       try { console.info('[tsu] preflight exception'); } catch(_) {}
@@ -1608,40 +1665,37 @@
     }
   } catch(_) {}
 
-  // chrome.runtime.sendMessage の安全ラッパー
   const safeSendMessage = function(payload, cb, _attempt) {
     try {
       const attempt = (typeof _attempt === 'number') ? _attempt : 0;
       if (!(chrome && chrome.runtime && chrome.runtime.sendMessage)) throw new Error('runtime_unavailable');
-      try {
-        chrome.runtime.sendMessage(payload, (resp) => {
+      chrome.runtime.sendMessage(payload, (resp) => {
+        const err = chrome.runtime.lastError;
+        if (err) {
           try {
-            const err = chrome.runtime && chrome.runtime.lastError;
-            if (err) {
-              const msg = String(err.message || err);
-              // 一時的な無効化は短時間で再試行
-              if (/Extension context invalidated/i.test(msg) && attempt < 5) {
-                const delay = Math.min(3200, 200 * Math.pow(2, attempt));
-                return setTimeout(() => safeSendMessage(payload, cb, attempt + 1), delay);
-              }
-              try { showToast('拡張が無効になっています。ページを再読み込みしてください'); } catch(_) {}
-              return cb && cb({ ok: false, error: msg });
+            const msg = String(err && err.message || err || '');
+            // 一時的な無効化/未接続/応答前クローズなどは短時間で再試行（最大5回、指数バックオフ）
+            const retryable = /Extension context invalidated|Receiving end does not exist|Could not establish connection|The message port closed before a response was received/i.test(msg);
+            if (retryable && attempt < 5) {
+              const delay = Math.min(3200, 200 * Math.pow(2, attempt));
+              return setTimeout(() => safeSendMessage(payload, cb, attempt + 1), delay);
             }
-          } catch(_) {}
-          cb && cb(resp);
-        });
-      } catch (e) {
+            try { showToast('拡張が無効になっています。ページを再読み込みしてください'); } catch(_) {}
+            return cb && cb({ ok: false, error: msg });
+          } catch(_) { return cb && cb({ ok: false, error: 'runtime_error' }); }
+        }
+        try { cb && cb(resp); } catch(_) {}
+      });
+    } catch (e) {
+      try {
         const msg = String(e && e.message || e || '');
-        if (/Extension context invalidated/i.test(msg) && attempt < 5) {
+        if (/Extension context invalidated|Receiving end does not exist|Could not establish connection|The message port closed before a response was received/i.test(msg) && attempt < 5) {
           const delay = Math.min(3200, 200 * Math.pow(2, attempt));
           return setTimeout(() => safeSendMessage(payload, cb, attempt + 1), delay);
         }
         try { showToast('拡張がリロードされました。ページを再読み込みしてください'); } catch(_) {}
         return cb && cb({ ok: false, error: msg });
-      }
-    } catch (e2) {
-      try { showToast('拡張に接続できません。ページを再読み込みしてください'); } catch(_) {}
-      return cb && cb({ ok: false, error: String(e2 && e2.message || e2) });
+      } catch(_) { return cb && cb({ ok: false, error: 'runtime_exception' }); }
     }
   };
 

@@ -1260,7 +1260,11 @@
                   if (Array.isArray(trs)) trs.forEach((t) => trSet.add(String(t)));
                 } catch (_) {}
               }
-              if (trSet.size) window.__tsu_pk_cache.transports = Array.from(trSet).join(',');
+              if (trSet.size) {
+                const attachSel = (pub && pub.authenticatorSelection && pub.authenticatorSelection.authenticatorAttachment) || undefined;
+                const norm = __tsu_normalizeTransports(Array.from(trSet), attachSel);
+                if (norm) window.__tsu_pk_cache.transports = norm;
+              }
             } catch (_) {}
           } catch (_) {}
         }
@@ -1301,10 +1305,12 @@
               window.__tsu_pk_cache.publicKeyB64 = String(resp.publicKey);
             }
           } catch(_) {}
-          // Transports fallback
+          // Transports fallback（正規化あり）
           try {
             if (resp && Array.isArray(resp.transports) && resp.transports.length) {
-              window.__tsu_pk_cache.transports = resp.transports.join(',');
+              const attach = cred && cred.authenticatorAttachment;
+              const norm = __tsu_normalizeTransports(resp.transports, attach);
+              if (norm) window.__tsu_pk_cache.transports = norm;
             }
           } catch(_) {}
           // Ensure rpId and title
