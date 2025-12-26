@@ -26,6 +26,7 @@
     "storage",
     "activeTab",
     "scripting",
+    "privacy",
     "nativeMessaging"
   ],
   "host_permissions": [

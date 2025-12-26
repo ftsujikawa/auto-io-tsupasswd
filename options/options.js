@@ -17,6 +17,67 @@ if (saveBtn) saveBtn.addEventListener("click", save);
 restore();
 
 // ==========================
+// Password Manager 連携（Chrome内蔵の保存を無効化）
+// ==========================
+(function(){
+  const cb = document.getElementById('disable-chrome-password-saving');
+  const st = document.getElementById('pm-status');
+  if (!cb) return;
+
+  const setStatus = (msg, isError) => {
+    try {
+      if (!st) return;
+      st.textContent = String(msg || '');
+      st.style.color = isError ? '#d93025' : '';
+    } catch(_) {}
+  };
+
+  const applyPrivacy = (disable) => {
+    try {
+      if (!(chrome && chrome.privacy && chrome.privacy.services && chrome.privacy.services.passwordSavingEnabled)) {
+        setStatus('この環境では設定を変更できません。', true);
+        return;
+      }
+      const api = chrome.privacy.services.passwordSavingEnabled;
+      if (disable) {
+        api.set({ value: false }, () => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            setStatus('設定に失敗しました: ' + String(chrome.runtime.lastError.message || ''), true);
+          } else {
+            setStatus('Chromeのパスワード保存を無効化しました');
+            setTimeout(() => { try { if (st && st.textContent === 'Chromeのパスワード保存を無効化しました') st.textContent = ''; } catch(_) {} }, 1400);
+          }
+        });
+      } else {
+        api.clear({}, () => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            setStatus('設定の解除に失敗しました: ' + String(chrome.runtime.lastError.message || ''), true);
+          } else {
+            setStatus('Chromeのパスワード保存を既定に戻しました');
+            setTimeout(() => { try { if (st && st.textContent === 'Chromeのパスワード保存を既定に戻しました') st.textContent = ''; } catch(_) {} }, 1400);
+          }
+        });
+      }
+    } catch(e) {
+      setStatus('例外: ' + String(e && e.message || e), true);
+    }
+  };
+
+  // restore
+  try {
+    chrome.storage.local.get({ disable_chrome_password_saving: false }, (data) => {
+      try { cb.checked = !!(data && data.disable_chrome_password_saving); } catch(_) {}
+    });
+  } catch(_) {}
+
+  cb.addEventListener('change', () => {
+    const disable = !!cb.checked;
+    try { chrome.storage.local.set({ disable_chrome_password_saving: disable }); } catch(_) {}
+    applyPrivacy(disable);
+  });
+})();
+
+// ==========================
 // 検索・一覧・更新（オプション）
 // ==========================
 (function(){

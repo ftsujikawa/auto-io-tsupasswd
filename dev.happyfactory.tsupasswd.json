@@ -4,6 +4,6 @@
   "path": "/usr/local/bin/tsupasswd-host",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://aahbmbieepcmpabkhhkmdppphdmligedi/"
+    "chrome-extension://lcldphkjlgbamclijokfnkfemmkaehjl/"
   ]
 }

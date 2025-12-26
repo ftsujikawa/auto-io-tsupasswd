@@ -10,6 +10,10 @@
     try { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } catch(_) { return ''; }
   };
 
+  let showToast = function(text) {
+    try { console.info('[tsu] toast', String(text || '')); } catch(_) {}
+  };
+
   // ユーザID候補の入力を優先度付きで探索
   const findUserInputCandidate = function(scope) {
     try {
@@ -214,6 +218,15 @@
       try { console.info('[tsu] passkey save enter'); } catch(_) {}
       try { window.__tsu_last_save_enter = Date.now(); } catch(_) {}
       const raw = (providedDetail && typeof providedDetail === 'object') ? providedDetail : (extractPasskeyFromPage(document) || {});
+      // bridge/page hook 由来のキー名ゆれを正規化
+      try {
+        if (raw && typeof raw === 'object') {
+          if (!raw.cred && raw.credentialIdB64) raw.cred = raw.credentialIdB64;
+          if (!raw.user && raw.userHandleB64) raw.user = raw.userHandleB64;
+          if (!raw.pub && raw.publicKeyB64) raw.pub = raw.publicKeyB64;
+          if (!raw.att && raw.attestationB64) raw.att = raw.attestationB64;
+        }
+      } catch(_) {}
       // 多重保存防止（同一 credentialId を一定時間内に二重保存しない）
       try {
         const keyNow = String((raw && (raw.cred || raw.credentialIdB64)) || '');
@@ -232,27 +245,11 @@
       try {
         const pick = () => {
           try {
-            // Manual override from extension/page config
+            // 入力欄の値を最優先
             try {
-              const ov = (window.tsupasswd && typeof window.tsupasswd.titleOverride === 'string') ? String(window.tsupasswd.titleOverride).trim() : '';
-              if (ov) return ov;
+              const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
+              if (ax) return ax;
             } catch(_) {}
-            // Prefer injected page cache title if available
-            try {
-              const tcache = (window.__tsu_pk_cache && window.__tsu_pk_cache.title) ? String(window.__tsu_pk_cache.title).trim() : '';
-              if (tcache) return tcache;
-            } catch(_) {}
-            // Or prefer userTitleCandidate from options.user if present and safe
-            try {
-              const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
-              if (cand) {
-                const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
-                const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
-                if (cand.toLowerCase() !== host && !isDomainLike(cand)) return cand;
-              }
-            } catch(_) {}
-            const ax = (window.__tsu_current_anchor && window.__tsu_current_anchor.value && String(window.__tsu_current_anchor.value).trim()) || '';
-            if (ax) return ax;
           } catch(_) {}
           try {
             const ae = document && document.activeElement;
@@ -287,6 +284,25 @@
                   if (txt) return txt;
                 }
               } catch(_) {}
+            }
+          } catch(_) {}
+          // Manual override from extension/page config
+          try {
+            const ov = (window.tsupasswd && typeof window.tsupasswd.titleOverride === 'string') ? String(window.tsupasswd.titleOverride).trim() : '';
+            if (ov) return ov;
+          } catch(_) {}
+          // Prefer injected page cache title if available
+          try {
+            const tcache = (window.__tsu_pk_cache && window.__tsu_pk_cache.title) ? String(window.__tsu_pk_cache.title).trim() : '';
+            if (tcache) return tcache;
+          } catch(_) {}
+          // Or prefer userTitleCandidate from options.user if present and safe
+          try {
+            const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
+            if (cand) {
+              const host = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+              const isDomainLike = (s) => { try { return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s||'').trim()); } catch(_) { return false; } };
+              if (cand.toLowerCase() !== host && !isDomainLike(cand)) return cand;
             }
           } catch(_) {}
           try {
@@ -409,7 +425,7 @@
         try { console.info('[tsu] passkey save precheck: missing field(s)', { hasCred, hasPub }); } catch(_) {}
         // Fallback: if attestation is available, delegate to native host (SAVE_TSUPASSWD) to derive publicKey from attestationObject
         try {
-          const attB64 = String((raw && raw.att) || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || '') || '';
+          const attB64 = String((raw && (raw.att || raw.attestationB64)) || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || '') || '';
           if (hasCred && !hasPub && attB64) {
             const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
             const entry = {
@@ -425,7 +441,7 @@
                 transports: (function(){ try { return detail.transports ? String(detail.transports).split(',').filter(Boolean) : undefined; } catch(_) { return undefined; } })()
               },
               meta: {
-                rpId: String(payload.rpId || ''),
+                rpId: String(rpId || ''),
                 userHandle: String(detail.userHandleB64 || ''),
                 origin: (function(){ try { return (location && location.origin) ? String(location.origin) : ''; } catch(_) { return ''; } })()
               }
@@ -442,7 +458,10 @@
                     if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
                   } catch(_) {}
                 } else {
-                  try { showToast('保存に失敗しました'); } catch(_) {}
+                  try {
+                    const err = (resp && (resp.error || (resp.data && resp.data.error))) || '';
+                    showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+                  } catch(_) { try { showToast('保存に失敗しました'); } catch(__) {} }
                 }
               } catch(_) {}
             });
@@ -506,7 +525,12 @@
                 if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
               } catch(_) {}
             }
-            else { try { showToast('保存に失敗しました'); } catch(_) {} }
+            else {
+              try {
+                const err = (resp && (resp.error || (resp.data && resp.data.error))) || '';
+                showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+              } catch(_) { try { showToast('保存に失敗しました'); } catch(__) {} }
+            }
           } catch(_) {}
         });
       };
@@ -704,11 +728,17 @@
                 setTimeout(() => {
                   try { console.info('[tsu] autosave(passkey): invoke'); } catch(_) {}
                   try {
-                    const det = detail || extractPasskeyFromPage(document) || {};
-                    if (det && det.publicKeyB64 && det.credentialIdB64) {
+                    const det0 = detail || extractPasskeyFromPage(document) || {};
+                    const det = Object.assign({}, det0, {
+                      attestationB64: (det0 && det0.attestationB64) || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || ''
+                    });
+                    const hasCred = !!(det && det.credentialIdB64);
+                    const hasPub = !!(det && det.publicKeyB64);
+                    const hasAtt = !!(det && det.attestationB64);
+                    if (hasCred && (hasPub || hasAtt)) {
                       (window.savePasskeySilentlyRef || f)(null, det);
                     } else {
-                      try { console.info('[tsu] autosave(passkey) skip: missing publicKey/credential'); } catch(_) {}
+                      try { console.info('[tsu] autosave(passkey) skip: missing credential and (publicKey or attestation)'); } catch(_) {}
                     }
                   } catch(e) { try { console.info('[tsu] autosave(passkey) error', String(e && e.message || e)); } catch(_) {} }
                 }, 350);
@@ -1619,7 +1649,7 @@
     return true;
   };
 
-  const showToast = function(text) {
+  showToast = function(text) {
     try {
       let doc = document;
       try {
@@ -1873,6 +1903,121 @@
     if (btnOk) { btnOk.addEventListener('click', onSave, true); btnOk.addEventListener('pointerdown', onSave, true); }
     return box;
   };
+
+  // ==========================
+  // パスワード保存提案（フォーム送信→次ページでダイアログ表示）
+  // ==========================
+  (function(){
+    try {
+      if (window.__tsu_pw_save_suggest_installed) return;
+      window.__tsu_pw_save_suggest_installed = true;
+    } catch(_) {}
+
+    const STORE_KEY = '__tsu_pending_save_cred';
+
+    const getStore = () => {
+      try {
+        if (chrome && chrome.storage && chrome.storage.session) return chrome.storage.session;
+      } catch(_) {}
+      return chrome.storage.local;
+    };
+
+    const nowTs = () => { try { return Date.now(); } catch(_) { return 0; } };
+
+    const shouldSkip = () => {
+      try {
+        if (document && document.visibilityState && document.visibilityState !== 'visible') return true;
+      } catch(_) {}
+      try {
+        // 直近のユーザ操作が無い場合は保存提案しない（自動サブミット等の誤検知対策）
+        if (typeof hasRecentUserGesture === 'function' && !hasRecentUserGesture()) return true;
+      } catch(_) {}
+      return false;
+    };
+
+    const summarize = (form) => {
+      try {
+        if (!form || !form.querySelectorAll) return null;
+        const ins = Array.prototype.slice.call(form.querySelectorAll('input'));
+        const pEl = ins.find(isPassLike) || null;
+        if (!pEl || typeof pEl.value !== 'string') return null;
+        const pw = String(pEl.value || '').trim();
+        if (!pw) return null;
+        const uEl = ins.find((el) => { try { return el && el !== pEl && isUserLike(el); } catch(_) { return false; } }) || null;
+        const user = (uEl && typeof uEl.value === 'string') ? String(uEl.value || '').trim() : '';
+        // password だけでも保存したいケースがあるので user は空許容。ただし URL は必須。
+        const url = (location && location.href) ? String(location.href) : '';
+        if (!url) return null;
+        return {
+          url,
+          username: user,
+          password: pw,
+          at: nowTs(),
+        };
+      } catch(_) { return null; }
+    };
+
+    // submit 時に候補を一時保存（次ページで表示）
+    try {
+      document.addEventListener('submit', (ev) => {
+        try {
+          if (shouldSkip()) return;
+          const form = ev && ev.target;
+          const data = summarize(form);
+          if (!data) return;
+          // 連続送信による上書きを抑止（同一URL/ユーザ/パスの短時間連続は無視）
+          try {
+            const k = String(data.url || '') + '|' + String(data.username || '') + '|' + String(data.password || '');
+            const lastK = String(window.__tsu_last_pending_key || '');
+            const lastT = Number(window.__tsu_last_pending_ts || 0);
+            const t = nowTs();
+            if (k && lastK === k && lastT && (t - lastT) < 2000) return;
+            window.__tsu_last_pending_key = k;
+            window.__tsu_last_pending_ts = t;
+          } catch(_) {}
+
+          const store = getStore();
+          store.set({ [STORE_KEY]: data }, () => { /* ignore */ });
+        } catch(_) {}
+      }, true);
+    } catch(_) {}
+
+    // 次ページ（同一オリジン）で一時保存があればダイアログ表示
+    try {
+      const store = getStore();
+      store.get({ [STORE_KEY]: null }, (obj) => {
+        try {
+          const pending = obj && obj[STORE_KEY];
+          if (!pending) return;
+          // 期限切れ（60秒）
+          const age = nowTs() - Number(pending.at || 0);
+          if (!(age >= 0 && age < 60000)) {
+            try { store.remove([STORE_KEY]); } catch(_) {}
+            return;
+          }
+          // 同一オリジン以外は出さない
+          try {
+            const u = pending.url ? new URL(String(pending.url)) : null;
+            if (u && location && u.origin !== location.origin) {
+              try { store.remove([STORE_KEY]); } catch(_) {}
+              return;
+            }
+          } catch(_) {}
+
+          // ダイアログを表示（DOM 準備後）
+          setTimeout(() => {
+            try {
+              if (shouldSkip()) return;
+              const anchor = (document && (document.querySelector('input[type="password"]') || document.activeElement)) || null;
+              openSaveDialog(anchor, String(pending.username || ''), String(pending.password || ''));
+            } catch(_) {}
+          }, 350);
+
+          try { store.remove([STORE_KEY]); } catch(_) {}
+        } catch(_) {}
+      });
+    } catch(_) {}
+  })();
 
   // パスキー専用ポップアップ呼び出し
   function showPasskeyPopup(anchor) {
@@ -2533,6 +2678,29 @@
           // 何も無ければ entriesAll は空のままにし、以降で『未検出』として表示する
           if ((!ok || !data) && noUser && noPass) {
             entriesAll = [];
+          }
+        } catch(_) {}
+
+        // 自動入力（候補が1件のみ & 未入力のとき）
+        try {
+          if (Array.isArray(entriesAll) && entriesAll.length === 1) {
+            const only = entriesAll[0] || null;
+            if (only) {
+              const a = anchor;
+              const form = a && (a.form || (a.closest && a.closest('form')));
+              const scope = form || document;
+              const ins = Array.prototype.slice.call(scope.querySelectorAll('input'));
+              const uEl = ins.find(isUserLike) || null;
+              const pEl = ins.find(isPassLike) || null;
+              const uNow = (uEl && typeof uEl.value === 'string') ? String(uEl.value || '').trim() : '';
+              const pNow = (pEl && typeof pEl.value === 'string') ? String(pEl.value || '').trim() : '';
+              // 上書きはしない: 未入力のみ補完
+              const uVal = (!uNow && only.username) ? String(only.username) : '';
+              const pVal = (!pNow && only.password) ? String(only.password) : '';
+              if (uVal || pVal) {
+                forceApply(uEl, pEl, uVal || uNow, pVal || pNow);
+              }
+            }
           }
         } catch(_) {}
         // 一覧HTMLを生成
