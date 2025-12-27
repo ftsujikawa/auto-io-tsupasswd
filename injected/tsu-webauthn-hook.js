@@ -844,6 +844,9 @@
 
     const toU8 = (buf) => { try { return buf instanceof Uint8Array ? buf : new Uint8Array(buf); } catch (_) { return new Uint8Array(0); } };
     const host = (() => { try { return String(location.hostname || '').toLowerCase(); } catch(_) { return ''; } })();
+    const isPasskeyIo = (() => {
+      try { return /(^|\.)passkey\.io$/i.test(String(host || '')); } catch(_) { return false; }
+    })();
     const isFallbackDisabledForHost = () => {
       try {
         // 既定ではドメインによる抑止は行わない。必要なら window.__tsu_pk_no_fallback = true で明示的に無効化。
@@ -1702,8 +1705,13 @@
         // マスターOFF時のみ、許可ウィンドウ外の get() を抑止（リロード直後の不意なOSポップアップ対策）
         try {
           if (!autoEnabled()) {
+            // passkey.io は「Sign in with a passkey」ボタン押下で get() を起動する。
+            // activeElement が入力欄でなくてもユーザー操作直後の get() を抑止するとログイン不能になるため、例外的に許可する。
+            if (isPasskeyIo) {
+              try { window.__tsu_cond_ok_until = Date.now() + 6000; } catch(_) {}
+            }
             const allowed = conditionalAllowedNow();
-            if (!allowed && window.__tsu_pk_prefer_fallback !== true && window.__tsu_pk_ours !== true) {
+            if (!allowed && !isPasskeyIo && window.__tsu_pk_prefer_fallback !== true && window.__tsu_pk_ours !== true) {
               if (conditionalGraceActive()) {
                 console.info('[tsu] injected: allow get during conditional grace window');
               } else {
@@ -1718,7 +1726,7 @@
           if (isConditional) {
             const okUntil = Number(window.__tsu_cond_ok_until || 0);
             const ok = okUntil && Date.now() < okUntil;
-            if (!ok && window.__tsu_pk_prefer_fallback !== true && !autoEnabled()) {
+            if (!ok && !isPasskeyIo && window.__tsu_pk_prefer_fallback !== true && !autoEnabled()) {
               if (conditionalGraceActive()) {
                 console.info('[tsu] injected: allow conditional get during grace window');
               } else {
@@ -1831,9 +1839,14 @@
                     try { console.info('[tsu] injected: preferred moved to front'); } catch(_) {}
                   } else {
                     // 既存の allowCredentials が非空なら注入しない（RP側で未知ID扱いとなり失敗する危険）。
+                    // allowCredentials が空の場合も、サイトによっては「全候補許可」を意味するため、誤って注入すると候補が0件になり得る。
                     if (ac.length === 0) {
-                      final.unshift(prefItem);
-                      try { console.info('[tsu] injected: preferred injected to front (allowCredentials was empty)'); } catch(_) {}
+                      if (isPasskeyIo) {
+                        try { console.info('[tsu] injected: passkey.io skip preferred injection when allowCredentials is empty'); } catch(_) {}
+                      } else {
+                        final.unshift(prefItem);
+                        try { console.info('[tsu] injected: preferred injected to front (allowCredentials was empty)'); } catch(_) {}
+                      }
                     } else {
                       try { console.info('[tsu] injected: preferred not present and allowCredentials non-empty; skip injection to avoid unrecognized ID'); } catch(_) {}
                     }

@@ -173,6 +173,74 @@
   } catch(_) {}
 
   // パスキー登録ボタンのフック（クリック後に認証情報を保存）
+  function tsuPasskeyBrandName() {
+    try { return 'auto I/O tsupasswd'; } catch(_) { return 'tsupasswd'; }
+  }
+  function tsuShowPasskeySaveGuidance(state, errText) {
+    try {
+      const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+      if (!/(^|\.)passkey\.io$/i.test(h)) return;
+      const brand = tsuPasskeyBrandName();
+      const id = 'tsu-passkey-save-guidance';
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = id;
+        el.style.position = 'fixed';
+        el.style.top = '12px';
+        el.style.left = '50%';
+        el.style.transform = 'translateX(-50%)';
+        el.style.zIndex = '2147483647';
+        el.style.maxWidth = 'min(680px, calc(100vw - 24px))';
+        el.style.padding = '10px 12px';
+        el.style.borderRadius = '10px';
+        el.style.fontSize = '13px';
+        el.style.lineHeight = '1.35';
+        el.style.boxShadow = '0 10px 30px rgba(0,0,0,0.18)';
+        el.style.border = '1px solid rgba(0,0,0,0.12)';
+        el.style.background = 'rgba(255,255,255,0.96)';
+        el.style.color = '#111';
+        el.style.backdropFilter = 'blur(6px)';
+        el.style.display = 'none';
+        document.body.appendChild(el);
+      }
+
+      const setStyle = (kind) => {
+        try {
+          if (kind === 'saved') {
+            el.style.border = '1px solid rgba(0,128,0,0.25)';
+          } else if (kind === 'failed') {
+            el.style.border = '1px solid rgba(160,0,0,0.25)';
+          } else {
+            el.style.border = '1px solid rgba(0,0,0,0.12)';
+          }
+        } catch(_) {}
+      };
+
+      let msg = '';
+      if (state === 'saved') {
+        msg = brand + ' にパスキーを保存しました。保存先リストに ' + brand + ' は表示されません。';
+      } else if (state === 'failed') {
+        const e = errText ? String(errText).slice(0, 160) : '';
+        msg = e ? (brand + ' への保存に失敗しました: ' + e + '（保存先リストに ' + brand + ' は表示されません）') : (brand + ' への保存に失敗しました。保存先リストに ' + brand + ' は表示されません。');
+      } else {
+        msg = '保存先リストに ' + brand + ' は表示できませんが、この拡張が自動で ' + brand + ' にパスキーを保存します。';
+      }
+      try { setStyle(state); } catch(_) {}
+      try { el.textContent = msg; } catch(_) {}
+      try { el.style.display = 'block'; } catch(_) {}
+
+      try {
+        const prev = Number(el.__tsu_hide_timer || 0);
+        if (prev) clearTimeout(prev);
+      } catch(_) {}
+      try {
+        const ms = (state === 'failed') ? 9000 : (state === 'saved' ? 4500 : 6500);
+        el.__tsu_hide_timer = setTimeout(() => { try { el.style.display = 'none'; } catch(_) {} }, ms);
+      } catch(_) {}
+    } catch(_) {}
+  }
+
   function bindPasskeyRegisterButtons() {
     try {
       if (window.__tsu_reg_btn_bound) return;
@@ -194,6 +262,15 @@
             try {
               markActivity();
               const anchor = document.activeElement || el;
+              try {
+                const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                if (/(^|\.)passkey\.io$/i.test(h)) {
+                  const brand = tsuPasskeyBrandName();
+                  try { window.__tsu_pk_save_intent_ts = Date.now(); } catch(_) {}
+                  try { showToast(brand + ' に保存します…'); } catch(_) {}
+                  try { tsuShowPasskeySaveGuidance('intent'); } catch(_) {}
+                }
+              } catch(_) {}
               // ページ側フックからの tsu:passkeyCaptured を待ってサイレント保存
               try {
                 const waitMs = 20000;
@@ -388,6 +465,65 @@
       } catch(_) {}
       if (!title) { title = String(raw.title || ''); }
       try { console.info('[tsu] passkey title decide', { fromInput: !!(title && title.length), title }); } catch(_) {}
+
+      try {
+        const looksEmail = (s) => { try { return /.+@.+\..+/.test(String(s || '').trim()); } catch(_) { return false; } };
+        const email = (function(){
+          try {
+            const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
+            if (looksEmail(cand)) return cand;
+          } catch(_) {}
+          try {
+            const ae = document && document.activeElement;
+            if (ae && typeof ae.value === 'string') {
+              const v = String(ae.value || '').trim();
+              if (looksEmail(v)) return v;
+            }
+          } catch(_) {}
+          try {
+            const nodes = Array.prototype.slice.call(document.querySelectorAll('input, textarea'));
+            for (const el of nodes) {
+              try {
+                if (!el || typeof el.value !== 'string') continue;
+                const v = String(el.value || '').trim();
+                if (looksEmail(v)) return v;
+              } catch(_) {}
+            }
+          } catch(_) {}
+          return '';
+        })();
+
+        if (email) {
+          const siteLabel = (function(){
+            try {
+              const tcache = (window.__tsu_pk_cache && window.__tsu_pk_cache.title) ? String(window.__tsu_pk_cache.title).trim() : '';
+              if (tcache) return tcache;
+            } catch(_) {}
+            try { if (document && document.title) { const t = String(document.title).trim(); if (t) return t; } } catch(_) {}
+            try { if (rpId) return String(rpId); } catch(_) {}
+            return '';
+          })();
+
+          const emailL = String(email).toLowerCase();
+          const titleL = String(title || '').toLowerCase();
+          if (!titleL.includes(emailL)) {
+            if (siteLabel && String(siteLabel).toLowerCase() !== emailL) {
+              title = `${siteLabel} - ${email}`;
+            } else {
+              title = String(email);
+            }
+          } else {
+            if (siteLabel && String(title || '').trim() === String(email).trim() && String(siteLabel).toLowerCase() !== emailL) {
+              title = `${siteLabel} - ${email}`;
+            }
+          }
+          try {
+            const maxLen = 160;
+            if (title && String(title).length > maxLen) title = String(title).slice(0, maxLen);
+          } catch(_) {}
+        }
+      } catch(_) {}
+
       // If title still empty after sanitization, fallback to userTitleCandidate/doc title/rpId to ensure saving proceeds
       if (!title) {
         try {
@@ -411,7 +547,7 @@
           title: String(title || raw.title || ''),
           rpId: String(raw.rp || rpId || ''),
           credentialIdB64: String(raw.cred || ''),
-          userHandleB64: String(raw.user || ''),
+          userHandleB64: String(raw.user || raw.userHandleB64 || (window.__tsu_pk_cache && window.__tsu_pk_cache.userHandleB64) || ''),
           publicKeyB64: String(raw.pub || ''),
           signCount: cntNum,
         };
@@ -442,28 +578,96 @@
               },
               meta: {
                 rpId: String(rpId || ''),
-                userHandle: String(detail.userHandleB64 || ''),
+                userHandle: String(detail.userHandleB64 || (window.__tsu_pk_cache && window.__tsu_pk_cache.userHandleB64) || ''),
                 origin: (function(){ try { return (location && location.origin) ? String(location.origin) : ''; } catch(_) { return ''; } })()
               }
             };
             try { console.info('[tsu] passkey save fallback via host(SAVE)', { hasAtt: true }); } catch(_) {}
-            safeSendMessage({ type: 'SAVE_TSUPASSWD', host, entry }, (resp) => {
+
+            const doSaveViaHost = () => {
               try {
-                const ok = !!(resp && (resp.ok === true || (resp.data && resp.data.ok === true)));
-                if (ok) {
-                  try { showToast('保存しました'); } catch(_) {}
+                safeSendMessage({ type: 'SAVE_TSUPASSWD', host, entry }, (resp) => {
                   try {
-                    window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
-                    window.__tsu_pk_recent_entries.unshift({ title: entry.title || '', rp: entry.meta.rpId || '', cred: detail.credentialIdB64 || '' });
-                    if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
+                    const ok = !!(resp && (resp.ok === true || (resp.data && resp.data.ok === true)));
+                    if (ok) {
+                      try {
+                        const brand = tsuPasskeyBrandName();
+                        const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                        showToast((/(^|\.)passkey\.io$/i.test(h)) ? (brand + ' にパスキーを保存しました') : '保存しました');
+                      } catch(_) { try { showToast('保存しました'); } catch(__) {} }
+                      try { tsuShowPasskeySaveGuidance('saved'); } catch(_) {}
+                      try {
+                        window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
+                        window.__tsu_pk_recent_entries.unshift({ title: entry.title || '', rp: entry.meta.rpId || '', cred: detail.credentialIdB64 || '' });
+                        if (window.__tsu_pk_recent_entries.length > 30) window.__tsu_pk_recent_entries.length = 30;
+                      } catch(_) {}
+                    } else {
+                      try {
+                        const err = (resp && (resp.error || (resp.data && resp.data.error))) || '';
+                        try {
+                          const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                          if (/(^|\.)passkey\.io$/i.test(h)) {
+                            const brand = tsuPasskeyBrandName();
+                            showToast(err ? (brand + ' への保存に失敗しました: ' + String(err).slice(0, 160)) : (brand + ' への保存に失敗しました'));
+                          } else {
+                            showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+                          }
+                        } catch(_) {
+                          showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+                        }
+                        try { tsuShowPasskeySaveGuidance('failed', err); } catch(_) {}
+                      } catch(_) { try { showToast('保存に失敗しました'); } catch(__) {} }
+                    }
                   } catch(_) {}
-                } else {
-                  try {
-                    const err = (resp && (resp.error || (resp.data && resp.data.error))) || '';
-                    showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
-                  } catch(_) { try { showToast('保存に失敗しました'); } catch(__) {} }
-                }
+                });
               } catch(_) {}
+            };
+
+            const readEntries = (v) => {
+              try {
+                if (!v) return [];
+                if (typeof v === 'string') { try { const d = JSON.parse(v); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+                if (v.stdout && typeof v.stdout === 'string') { try { const d = JSON.parse(v.stdout); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+                if (v.data && typeof v.data === 'string') { try { const d = JSON.parse(v.data); return Array.isArray(d) ? d : (d && d.entries) || []; } catch(_) { return []; } }
+                if (Array.isArray(v.entries)) return v.entries;
+                if (Array.isArray(v)) return v;
+                return [];
+              } catch(_) { return []; }
+            };
+
+            const deleteIds = (ids, cb) => {
+              try {
+                const list = Array.isArray(ids) ? ids.slice() : [];
+                const step = () => {
+                  try {
+                    const id = String(list.shift() || '');
+                    if (!id) { try { cb && cb(); } catch(_) {} return; }
+                    sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'delete', id] }, () => {
+                      try { step(); } catch(_) { try { cb && cb(); } catch(__) {} }
+                    });
+                  } catch(_) { try { cb && cb(); } catch(__) {} }
+                };
+                step();
+              } catch(_) { try { cb && cb(); } catch(__) {} }
+            };
+
+            const baseTitle = String(entry.title || '').trim();
+            if (!baseTitle) { doSaveViaHost(); return; }
+            const norm = (s) => { try { return String(s || '').trim().toLowerCase(); } catch(_) { return ''; } };
+            const want = norm(baseTitle);
+            sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', String(rpId || ''), '--json'] }, (respS) => {
+              try {
+                const entries = readEntries(respS && (respS.data || respS));
+                const ids = (Array.isArray(entries) ? entries : [])
+                  .filter(e => e && typeof e === 'object' && want && (norm(e.title || e.name || '') === want))
+                  .map(e => String((e && e.id) || '').trim())
+                  .filter(Boolean);
+                if (ids.length) {
+                  deleteIds(ids, () => { try { doSaveViaHost(); } catch(_) {} });
+                } else {
+                  doSaveViaHost();
+                }
+              } catch(_) { doSaveViaHost(); }
             });
             return;
           }
@@ -476,6 +680,22 @@
       const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
       try { console.info('[tsu] passkey save begin', { rpId: payload.rpId, hasCred: !!detail.credentialIdB64 }); } catch(_) {}
       try { window.__tsu_last_save_started = Date.now(); } catch(_) {}
+
+      const deleteIds = (ids, cb) => {
+        try {
+          const list = Array.isArray(ids) ? ids.slice() : [];
+          const step = () => {
+            try {
+              const id = String(list.shift() || '');
+              if (!id) { try { cb && cb(); } catch(_) {} return; }
+              sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'delete', id] }, () => {
+                try { step(); } catch(_) { try { cb && cb(); } catch(__) {} }
+              });
+            } catch(_) { try { cb && cb(); } catch(__) {} }
+          };
+          step();
+        } catch(_) { try { cb && cb(); } catch(__) {} }
+      };
 
       // 一意タイトル生成
       const uniqueTitle = (base, exists) => {
@@ -503,8 +723,6 @@
         if (finalTitle) {
           const t = String(finalTitle);
           args1.push('--title', t);
-          // 一部ホスト実装互換: --name も併記
-          args1.push('--name', t);
         }
         try { console.info('[tsu] passkey save args', { title: String(finalTitle||''), args: args1 }); } catch(_) {}
         sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: args1 }, (resp) => {
@@ -517,7 +735,12 @@
               (resp.data && (resp.data.ok === true || resp.data.status === 'ok'))
             ));
             if (ok) {
-              try { showToast('保存しました'); } catch(_) {}
+              try {
+                const brand = tsuPasskeyBrandName();
+                const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                showToast((/(^|\.)passkey\.io$/i.test(h)) ? (brand + ' にパスキーを保存しました') : '保存しました');
+              } catch(_) { try { showToast('保存しました'); } catch(__) {} }
+              try { tsuShowPasskeySaveGuidance('saved'); } catch(_) {}
               // 直近の候補に加える（ポップアップ即時反映用）
               try {
                 window.__tsu_pk_recent_entries = window.__tsu_pk_recent_entries || [];
@@ -528,7 +751,18 @@
             else {
               try {
                 const err = (resp && (resp.error || (resp.data && resp.data.error))) || '';
-                showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+                try {
+                  const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+                  if (/(^|\.)passkey\.io$/i.test(h)) {
+                    const brand = tsuPasskeyBrandName();
+                    showToast(err ? (brand + ' への保存に失敗しました: ' + String(err).slice(0, 160)) : (brand + ' への保存に失敗しました'));
+                  } else {
+                    showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+                  }
+                } catch(_) {
+                  showToast(err ? ('保存に失敗しました: ' + String(err).slice(0, 160)) : '保存に失敗しました');
+                }
+                try { tsuShowPasskeySaveGuidance('failed', err); } catch(_) {}
               } catch(_) { try { showToast('保存に失敗しました'); } catch(__) {} }
             }
           } catch(_) {}
@@ -536,7 +770,7 @@
       };
 
       // 既存タイトルを検索して重複回避（失敗時はそのまま保存）
-      const parseTitles = (raw) => {
+      const parseEntriesForUpdate = (raw) => {
         try {
           const read = (v) => {
             if (!v) return [];
@@ -548,17 +782,26 @@
             return [];
           };
           const arr = read(raw && (raw.data || raw));
-          return arr.map(e => String((e && (e.title || e.name)) || '')).filter(Boolean);
+          return (Array.isArray(arr) ? arr : []).filter(e => e && typeof e === 'object');
         } catch(_) { return []; }
       };
 
       try {
         sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', payload.rpId, '--json'] }, (resp) => {
           try {
-            const titles = parseTitles(resp);
+            const entries = parseEntriesForUpdate(resp);
             const baseTitle = (payload.title || payload.rpId || '');
-            const finalTitle = (Array.isArray(titles) && titles.length) ? uniqueTitle(baseTitle, titles) : baseTitle;
-            doSave(finalTitle);
+            const norm = (s) => { try { return String(s || '').trim().toLowerCase(); } catch(_) { return ''; } };
+            const want = norm(baseTitle);
+            const ids = entries
+              .filter(e => want && (norm(e.title || e.name || '') === want))
+              .map(e => String((e && e.id) || '').trim())
+              .filter(Boolean);
+            if (ids.length) {
+              deleteIds(ids, () => { try { doSave(baseTitle); } catch(_) {} });
+            } else {
+              doSave(baseTitle);
+            }
           } catch(_) { doSave(payload.title); }
         });
       } catch(_) {
@@ -662,6 +905,34 @@
   (function injectPageHookOnce(){
     try {
       if (window.__tsu_page_injected) return;
+
+      const requestMainHook = (reason) => {
+        try {
+          if (window.__tsu_main_hook_requested) return;
+          window.__tsu_main_hook_requested = true;
+        } catch(_) {}
+        try {
+          if (!(chrome && chrome.runtime && chrome.runtime.sendMessage)) return;
+          chrome.runtime.sendMessage({ type: 'TSU_INJECT_MAIN', reason: String(reason || '') }, () => {
+            try {
+              if (chrome.runtime && chrome.runtime.lastError) {
+                console.info('[tsu] main hook inject failed:', chrome.runtime.lastError.message);
+              } else {
+                console.info('[tsu] main hook inject requested');
+              }
+            } catch(_) {}
+          });
+        } catch(_) {}
+      };
+
+      // passkey.io 等の強CSPサイトでは先にMAIN world注入を試す（重複はフラグで抑止）
+      try {
+        const h = (location && location.hostname) ? String(location.hostname).toLowerCase() : '';
+        if (h === 'passkey.io' || h.endsWith('.passkey.io')) {
+          requestMainHook('domain:passkey.io');
+        }
+      } catch(_) {}
+
       const s = document.createElement('script');
       s.type = 'text/javascript';
       let url = '';
@@ -675,9 +946,22 @@
       s.onerror = function(){
         try { window.__tsu_page_injected_error = true; } catch(_) {}
         try { console.info('[tsu] page hook injection error'); } catch(_) {}
+        // CSP等で注入に失敗した場合は MAIN world へフォールバック
+        try { requestMainHook('script_onerror'); } catch(_) {}
         try { s.remove(); } catch(_) {}
       };
       (document.head || document.documentElement).appendChild(s);
+
+      // onerror が発火しない/検知できないケース向けのウォッチドッグ
+      try {
+        setTimeout(() => {
+          try {
+            if (!window.__tsu_page_injected) {
+              requestMainHook('watchdog');
+            }
+          } catch(_) {}
+        }, 1200);
+      } catch(_) {}
     } catch(_) {}
   })();
 
@@ -841,6 +1125,58 @@
                       } catch(_) {}
                       if (!title) { title = String(raw.title || ''); }
                       try { console.info('[tsu] passkey title decide(fallback)', { fromInput: !!(title && title.length), title }); } catch(_) {}
+
+                      try {
+                        const looksEmail = (s) => { try { return /.+@.+\..+/.test(String(s || '').trim()); } catch(_) { return false; } };
+                        const email = (function(){
+                          try {
+                            const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
+                            if (looksEmail(cand)) return cand;
+                          } catch(_) {}
+                          try {
+                            const nodes = Array.prototype.slice.call(document.querySelectorAll('input, textarea'));
+                            for (const el of nodes) {
+                              try {
+                                if (!el || typeof el.value !== 'string') continue;
+                                const v = String(el.value || '').trim();
+                                if (looksEmail(v)) return v;
+                              } catch(_) {}
+                            }
+                          } catch(_) {}
+                          return '';
+                        })();
+
+                        if (email) {
+                          const siteLabel = (function(){
+                            try {
+                              const tcache = (window.__tsu_pk_cache && window.__tsu_pk_cache.title) ? String(window.__tsu_pk_cache.title).trim() : '';
+                              if (tcache) return tcache;
+                            } catch(_) {}
+                            try { if (document && document.title) { const t = String(document.title).trim(); if (t) return t; } } catch(_) {}
+                            try { if (rpId) return String(rpId); } catch(_) {}
+                            return '';
+                          })();
+
+                          const emailL = String(email).toLowerCase();
+                          const titleL = String(title || '').toLowerCase();
+                          if (!titleL.includes(emailL)) {
+                            if (siteLabel && String(siteLabel).toLowerCase() !== emailL) {
+                              title = `${siteLabel} - ${email}`;
+                            } else {
+                              title = String(email);
+                            }
+                          } else {
+                            if (siteLabel && String(title || '').trim() === String(email).trim() && String(siteLabel).toLowerCase() !== emailL) {
+                              title = `${siteLabel} - ${email}`;
+                            }
+                          }
+                          try {
+                            const maxLen = 160;
+                            if (title && String(title).length > maxLen) title = String(title).slice(0, maxLen);
+                          } catch(_) {}
+                        }
+                      } catch(_) {}
+
                       if (!title) {
                         try {
                           const cand = (window.__tsu_pk_cache && window.__tsu_pk_cache.userTitleCandidate) ? String(window.__tsu_pk_cache.userTitleCandidate).trim() : '';
@@ -885,7 +1221,7 @@
                         } catch(_) { return String(base || ''); }
                       };
 
-                      const parseTitles = (raw) => {
+                      const readEntries = (raw) => {
                         try {
                           const read = (v) => {
                             if (!v) return [];
@@ -897,8 +1233,24 @@
                             return [];
                           };
                           const arr = read(raw && (raw.data || raw));
-                          return arr.map(e => String((e && (e.title || e.name)) || '')).filter(Boolean);
+                          return (Array.isArray(arr) ? arr : []).filter(e => e && typeof e === 'object');
                         } catch(_) { return []; }
+                      };
+
+                      const deleteIds = (ids, cb) => {
+                        try {
+                          const list = Array.isArray(ids) ? ids.slice() : [];
+                          const step = () => {
+                            try {
+                              const id = String(list.shift() || '');
+                              if (!id) { try { cb && cb(); } catch(_) {} return; }
+                              sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'delete', id] }, () => {
+                                try { step(); } catch(_) { try { cb && cb(); } catch(__) {} }
+                              });
+                            } catch(_) { try { cb && cb(); } catch(__) {} }
+                          };
+                          step();
+                        } catch(_) { try { cb && cb(); } catch(__) {} }
                       };
 
                       const doSave2 = (finalTitle) => {
@@ -919,10 +1271,19 @@
                       try {
                         sendWithPreflight({ type: 'RUN_TSUPASSWD', host, args: ['passkey', 'search', det.rpId, '--json'] }, (resp2) => {
                           try {
-                            const titles = parseTitles(resp2);
                             const baseTitle = (det.title || det.rpId || '');
-                            if (Array.isArray(titles) && titles.includes(String(baseTitle))) { try { showToast('同名のタイトルが既に存在するため保存しません'); } catch(_) {} return; }
-                            doSave2(baseTitle);
+                            const norm = (s) => { try { return String(s || '').trim().toLowerCase(); } catch(_) { return ''; } };
+                            const want = norm(baseTitle);
+                            const entries = readEntries(resp2);
+                            const ids = (Array.isArray(entries) ? entries : [])
+                              .filter(e => want && (norm(e.title || e.name || '') === want))
+                              .map(e => String((e && e.id) || '').trim())
+                              .filter(Boolean);
+                            if (ids.length) {
+                              deleteIds(ids, () => { try { doSave2(baseTitle); } catch(_) {} });
+                            } else {
+                              doSave2(baseTitle);
+                            }
                           } catch(_) { doSave2(det.title); }
                         });
                       } catch(_) {

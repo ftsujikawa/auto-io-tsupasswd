@@ -3,6 +3,106 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   try { console.log('[tsu][bg] onMessage:', { type: message && message.type, from: sender && sender.tab ? 'content' : 'unknown' }); } catch(_) {}
+
+  if (message && message.type === 'TSU_INJECT_MAIN') {
+    (async () => {
+      try {
+        if (!chrome.scripting || !sender || !sender.tab || typeof sender.tab.id !== 'number') {
+          try { sendResponse({ ok: false, error: 'scripting_unavailable' }); } catch(_) {}
+          return;
+        }
+        const tabId = sender.tab.id;
+        const frameId = (typeof sender.frameId === 'number') ? sender.frameId : 0;
+
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [frameId] },
+          world: 'MAIN',
+          func: () => {
+            try {
+              if (window.__tsu_webauthn_main_hooked) return;
+              window.__tsu_webauthn_main_hooked = true;
+              window.__tsu_pk_cache = window.__tsu_pk_cache || {};
+
+              const b64u = (buf) => {
+                try {
+                  const u8 = (buf instanceof ArrayBuffer) ? new Uint8Array(buf)
+                    : (ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer) : null);
+                  if (!u8) return '';
+                  let s = '';
+                  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+                  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+                } catch (_) { return ''; }
+              };
+              const post = (cache) => {
+                try { window.postMessage({ __tsu: true, type: 'tsu:passkeyCaptured', cache }, '*'); } catch (_) {}
+              };
+
+              if (!navigator || !navigator.credentials) return;
+              const origCreate = (typeof navigator.credentials.create === 'function') ? navigator.credentials.create.bind(navigator.credentials) : null;
+              const origGet = (typeof navigator.credentials.get === 'function') ? navigator.credentials.get.bind(navigator.credentials) : null;
+
+              if (origCreate) {
+                navigator.credentials.create = async function(options) {
+                  try {
+                    const pub = options && options.publicKey;
+                    if (pub) {
+                      try {
+                        const rpId = pub.rpId || (pub.rp && pub.rp.id) || '';
+                        const rpName = (pub.rp && pub.rp.name) || '';
+                        if (rpId) window.__tsu_pk_cache.rpId = String(rpId);
+                        if (rpName) window.__tsu_pk_cache.title = String(rpName);
+                        if (pub.user && pub.user.id) {
+                          window.__tsu_pk_cache.userHandleB64 = b64u(pub.user.id);
+                        }
+                      } catch(_) {}
+                    }
+                  } catch(_) {}
+
+                  const cred = await origCreate(options);
+                  try {
+                    if (cred && cred.type === 'public-key') {
+                      try { window.__tsu_pk_cache.credentialIdB64 = b64u(cred.rawId); } catch(_) {}
+                      try {
+                        const r = cred.response || {};
+                        if (r.attestationObject) window.__tsu_pk_cache.attestationB64 = b64u(r.attestationObject);
+                        if (r.clientDataJSON) window.__tsu_pk_cache.clientDataB64 = b64u(r.clientDataJSON);
+                        if (r.userHandle) window.__tsu_pk_cache.userHandleB64 = window.__tsu_pk_cache.userHandleB64 || b64u(r.userHandle);
+                      } catch(_) {}
+                      try { if (typeof cred.getTransports === 'function') { const tr = cred.getTransports(); if (Array.isArray(tr)) window.__tsu_pk_cache.transports = tr.join(','); } } catch(_) {}
+                      try { if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title); } catch(_) {}
+                      try { post(Object.assign({}, window.__tsu_pk_cache)); } catch(_) {}
+                    }
+                  } catch(_) {}
+                  return cred;
+                };
+              }
+
+              if (origGet) {
+                navigator.credentials.get = async function(options) {
+                  try {
+                    const pub = options && options.publicKey;
+                    if (pub) {
+                      try {
+                        const rpId = pub.rpId || '';
+                        if (rpId) window.__tsu_pk_cache.rpId = String(rpId);
+                        if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title);
+                      } catch(_) {}
+                    }
+                  } catch(_) {}
+                  return origGet(options);
+                };
+              }
+            } catch(_) {}
+          }
+        });
+        try { sendResponse({ ok: true }); } catch(_) {}
+      } catch (e) {
+        try { sendResponse({ ok: false, error: String(e && e.message || e) }); } catch(_) {}
+      }
+    })();
+    return true;
+  }
+
   const sendNativeWithFallback = (hosts, payload, cb) => {
     const list = Array.isArray(hosts) ? hosts.filter(Boolean) : [hosts].filter(Boolean);
     const errs = [];
