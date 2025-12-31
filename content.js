@@ -317,7 +317,12 @@
           }
         }
       } catch(_) {}
-      const rpId = raw.rp || (location && location.hostname) || '';
+      const rpId = (function(){
+        try {
+          const base = String(raw.rp || (location && location.hostname) || '');
+          return base.replace(/^www\./i, '');
+        } catch(_) { return String(raw.rp || (location && location.hostname) || ''); }
+      })();
       let title = '';
       try {
         const pick = () => {
@@ -549,9 +554,43 @@
           credentialIdB64: String(raw.cred || ''),
           userHandleB64: String(raw.user || raw.userHandleB64 || (window.__tsu_pk_cache && window.__tsu_pk_cache.userHandleB64) || ''),
           publicKeyB64: String(raw.pub || ''),
+          attestationB64: String(raw.att || raw.attestationB64 || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || ''),
           signCount: cntNum,
         };
       })();
+
+      // base64url 正規化（デコード不能な値は空にする）
+      try {
+        const cid = normalizeB64u(detail.credentialIdB64);
+        detail.credentialIdB64 = cid || '';
+        const uh = normalizeB64u(detail.userHandleB64);
+        detail.userHandleB64 = uh || '';
+        const pk = normalizeB64u(detail.publicKeyB64);
+        detail.publicKeyB64 = pk || '';
+        const att = normalizeB64u(detail.attestationB64);
+        detail.attestationB64 = att || '';
+      } catch(_) {}
+
+      // デコード後のバイト長で妥当性チェック（ログイン不能原因の切り分け用）
+      try {
+        const cidB = b64uToBytes(detail.credentialIdB64);
+        const uhB = b64uToBytes(detail.userHandleB64);
+        const pkB = b64uToBytes(detail.publicKeyB64);
+        const attB = b64uToBytes(detail.attestationB64);
+        console.info('[tsu] passkey field lengths', {
+          rpId: String(rpId || ''),
+          credentialIdBytes: cidB ? cidB.length : 0,
+          userHandleBytes: uhB ? uhB.length : 0,
+          publicKeyBytes: pkB ? pkB.length : 0,
+          attestationBytes: attB ? attB.length : 0,
+        });
+        if (!cidB || cidB.length === 0) {
+          try { console.info('[tsu] passkey save abort: invalid credentialIdB64'); } catch(_) {}
+          try { showToast('パスキー保存に必要な credentialId が取得できませんでした'); } catch(_) {}
+          return;
+        }
+      } catch(_) {}
+
       // デバッグ: 抽出状況をロギング
       try { console.info('[tsu] passkey extracted', { rpId, hasCred: !!detail.credentialIdB64, hasUser: !!detail.userHandleB64, hasPub: !!detail.publicKeyB64, signCount: detail.signCount }); } catch(_) {}
       // 必須チェック（credential と publicKey の両方を必須に変更）
@@ -561,7 +600,7 @@
         try { console.info('[tsu] passkey save precheck: missing field(s)', { hasCred, hasPub }); } catch(_) {}
         // Fallback: if attestation is available, delegate to native host (SAVE_TSUPASSWD) to derive publicKey from attestationObject
         try {
-          const attB64 = String((raw && (raw.att || raw.attestationB64)) || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || '') || '';
+          const attB64 = String(detail.attestationB64 || (raw && (raw.att || raw.attestationB64)) || (window.__tsu_pk_cache && window.__tsu_pk_cache.attestationB64) || '') || '';
           if (hasCred && !hasPub && attB64) {
             const host = (window.tsupasswd && window.tsupasswd.host) || 'dev.happyfactory.tsupasswd';
             const entry = {
@@ -1411,6 +1450,27 @@
       let s = '';
       for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
       return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+    } catch(_) { return ''; }
+  };
+  const b64uToBytes = (s) => {
+    try {
+      if (!s) return new Uint8Array(0);
+      const pad = (str) => str + '==='.slice((str.length + 3) % 4);
+      const b64 = pad(String(s).replace(/-/g, '+').replace(/_/g, '/'));
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    } catch(_) { return new Uint8Array(0); }
+  };
+  const normalizeB64u = (s) => {
+    try {
+      const raw = String(s || '').trim();
+      if (!raw) return '';
+      const cleaned = raw.replace(/\s+/g, '').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+      const bytes = b64uToBytes(cleaned);
+      if (!bytes || bytes.length === 0) return '';
+      return b64u(bytes.buffer);
     } catch(_) { return ''; }
   };
   const toU8 = (buf) => {

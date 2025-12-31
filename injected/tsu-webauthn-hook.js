@@ -845,12 +845,12 @@
     const toU8 = (buf) => { try { return buf instanceof Uint8Array ? buf : new Uint8Array(buf); } catch (_) { return new Uint8Array(0); } };
     const host = (() => { try { return String(location.hostname || '').toLowerCase(); } catch(_) { return ''; } })();
     const isPasskeyIo = (() => {
-      try { return /(^|\.)passkey\.io$/i.test(String(host || '')); } catch(_) { return false; }
+      try { return /(^|\.)passkeys?\.io$/i.test(String(host || '')); } catch(_) { return false; }
     })();
     const isFallbackDisabledForHost = () => {
       try {
-        // 既定ではドメインによる抑止は行わない。必要なら window.__tsu_pk_no_fallback = true で明示的に無効化。
-        if (window.__tsu_pk_no_fallback === true) return true;
+        // Some sites break if we takeover; disable fallback for them
+        if (/\.google\.com$/i.test(host)) return true;
         return false;
       } catch(_) { return false; }
     };
@@ -1427,7 +1427,21 @@
             }
           } catch(_) {}
           try { if (!window.__tsu_pk_cache.title && document && document.title) window.__tsu_pk_cache.title = String(document.title); } catch(_) {}
-          try { console.info('[tsu] injected: posting passkey cache after create', { hasCred: !!window.__tsu_pk_cache.credentialIdB64, hasPub: !!window.__tsu_pk_cache.publicKeyB64 }); } catch(_) {}
+          try {
+            const rp = String((window.__tsu_pk_cache && window.__tsu_pk_cache.rpId) || ((options && options.publicKey && (options.publicKey.rpId || (options.publicKey.rp && options.publicKey.rp.id))) || '') || '');
+            const cid = String((window.__tsu_pk_cache && window.__tsu_pk_cache.credentialIdB64) || '');
+            const uh = String((window.__tsu_pk_cache && window.__tsu_pk_cache.userHandleB64) || '');
+            const pk = String((window.__tsu_pk_cache && window.__tsu_pk_cache.publicKeyB64) || '');
+            console.info('[tsu] injected: passkey cache after create', {
+              rpId: rp,
+              hasCred: !!cid,
+              credLen: cid.length,
+              hasUser: !!uh,
+              userLen: uh.length,
+              hasPub: !!pk,
+              pubLen: pk.length,
+            });
+          } catch(_) {}
           try {
             window.postMessage({ __tsu: true, type: 'tsu:passkeyCaptured', cache: { ...window.__tsu_pk_cache } }, '*');
           } catch (e) { try { console.warn('[tsu] injected: postMessage cache failed', String(e && (e.message||e))); } catch(_) {} }
@@ -1456,7 +1470,7 @@
         try { if (email) { try { window.__tsu_pk_cache.email = email; } catch(_) {} } } catch(_) {}
         try {
           const host = String(location.hostname||'');
-          if (/passkey\.io$/i.test(host) && email && options && typeof options === 'object') {
+          if (/passkeys?\.io$/i.test(host) && email && options && typeof options === 'object') {
             // 仕様通り: options.publicKey を想定
             if (options.publicKey && options.publicKey.user) {
               try {
@@ -1816,10 +1830,16 @@
                   const ac = (pub.allowCredentials && Array.isArray(pub.allowCredentials)) ? pub.allowCredentials.slice() : [];
                   try { console.info('[tsu] injected: before allowCredentials length', ac.length); } catch(_) {}
                   const prefId = b64uToBytes(pref.credentialIdB64);
+                  if (!prefId || prefId.length === 0) {
+                    try { console.info('[tsu] injected: preferred credentialIdB64 decode failed; skip allowCredentials modification'); } catch(_) {}
+                    // 不正な preferred を混入させると候補が0件になり得るため、何もしない
+                    return;
+                  }
                   const bytesEq = (a,b) => { if (!a || !b || a.length!==b.length) return false; for (let i=0;i<a.length;i++) if (a[i]!==b[i]) return false; return true; };
                   const toAB = (u8) => { try { return (u8 && u8.buffer) ? (u8.byteOffset===0 && u8.byteLength===u8.buffer.byteLength ? u8.buffer.slice(0) : u8.slice().buffer) : new ArrayBuffer(0); } catch(_) { return new ArrayBuffer(0); } };
                   let found = -1;
-                  const norm = ac.map((x, i) => {
+                  const norm = [];
+                  ac.forEach((x, i) => {
                     try {
                       const id = (x && x.id);
                       let buf = null;
@@ -1827,9 +1847,11 @@
                       else if (ArrayBuffer.isView(id)) buf = new Uint8Array(id.buffer, id.byteOffset, id.byteLength);
                       else if (typeof id === 'string') buf = b64uToBytes(id);
                       else buf = new Uint8Array(0);
-                      if (bytesEq(buf, prefId)) found = i;
-                      return { type: 'public-key', id: toAB(buf), transports: x && x.transports };
-                    } catch(_) { return { type: 'public-key', id: new Uint8Array(0) }; }
+                      // 不正/空IDは除外（OS側で候補0件になり得るため）
+                      if (!buf || buf.length === 0) return;
+                      if (bytesEq(buf, prefId)) found = norm.length;
+                      norm.push({ type: 'public-key', id: toAB(buf), transports: x && x.transports });
+                    } catch(_) {}
                   });
                   let final = norm;
                   const prefItem = { type: 'public-key', id: toAB(prefId), transports: ['internal'] };
@@ -1871,7 +1893,12 @@
                     }
                   } catch(_) {}
                   try { console.info('[tsu] injected: after allowCredentials length', final.length); } catch(_) {}
-                  pub.allowCredentials = final;
+                  // 変換結果が空になった場合、元の allowCredentials を壊さない
+                  if (ac.length > 0 && final.length === 0) {
+                    try { console.info('[tsu] injected: skip overriding allowCredentials (would become empty)'); } catch(_) {}
+                  } else {
+                    pub.allowCredentials = final;
+                  }
                   try { window.__tsu_pk_pref_applied_ts = Date.now(); } catch(_) {}
                   // 先頭が preferred かを検証
                   try {
@@ -1909,6 +1936,13 @@
         const coolMs = Math.max(1500, Number(window.__tsu_pk_ui_cool_ms || 3500));
         window.__tsu_pk_ui_cool_until = window.__tsu_pk_last_ts + coolMs;
       } catch(_) {}
+      try {
+        const pub = options && options.publicKey;
+        const rp = String((pub && (pub.rpId || '')) || '');
+        const ac = (pub && Array.isArray(pub.allowCredentials)) ? pub.allowCredentials : [];
+        console.info('[tsu] injected: get options', { rpId: rp, allowCredentialsLen: ac.length, mediation: String((options && options.mediation) || '') });
+      } catch(_) {}
+
       let cred;
       try {
         try { window.__tsu_pk_ours = true; } catch(_) {}
