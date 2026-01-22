@@ -45,7 +45,7 @@
     } catch(_) { return null; }
   };
 
-  // --- パスキー環境での従来ポップアップ徹底無効化（最終ガード） ---
+  /* --- パスキー環境での従来ポップアップ徹底無効化（最終ガード） ---
   try {
     (function(){
       // presentAuthPopup をラップし、パスキー環境では常に候補一覧のみ表示して return
@@ -111,6 +111,7 @@
       } catch(_) {}
     })();
   } catch(_) {}
+*/
 
   // 直近ユーザ操作の有無
   function hasRecentUserGesture(maxMs) {
