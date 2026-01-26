@@ -1,0 +1,610 @@
+#!/usr/bin/env python3
+import sys, json, struct, subprocess, os, shutil
+
+def _find_in_obj(obj, keys_lower):
+    """Recursively find first matching key's string-like value in nested dict/list JSON.
+    Also supports key-value field shapes like {k/key/name: <fieldName>, v/value: <fieldValue>}.
+    """
+    if isinstance(obj, dict):
+        # Prefer direct match on this level
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in keys_lower:
+                if isinstance(v, (str, int, float)):
+                    return str(v)
+        # Support key-value style field objects
+        kv_name_keys = ("k", "key", "name", "field", "label")
+        kv_value_keys = ("v", "value", "val", "content")
+        name_val = None
+        for nk in kv_name_keys:
+            if nk in obj and isinstance(obj[nk], str) and obj[nk].lower() in keys_lower:
+                name_val = obj[nk]
+                break
+        if name_val is not None:
+            for vk in kv_value_keys:
+                if vk in obj and isinstance(obj[vk], (str, int, float)):
+                    return str(obj[vk])
+        # Recurse into values
+        for v in obj.values():
+            found = _find_in_obj(v, keys_lower)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_in_obj(item, keys_lower)
+            if found is not None:
+                return found
+    return None
+
+def read_msg():
+    raw_len = sys.stdin.buffer.read(4)
+    if len(raw_len) == 0:
+        return None
+    msg_len = struct.unpack('<I', raw_len)[0]
+    data = sys.stdin.buffer.read(msg_len)
+    return json.loads(data.decode('utf-8'))
+
+def write_msg(msg):
+    raw = json.dumps(msg).encode('utf-8')
+    sys.stdout.buffer.write(struct.pack('<I', len(raw)))
+    sys.stdout.buffer.write(raw)
+    sys.stdout.flush()
+
+while True:
+    msg = read_msg()
+    if msg is None:
+        break
+    try:
+        # 実行ファイルの探索（環境依存対策）
+        def find_bin():
+            cand = []
+            # メッセージからの明示指定を最優先
+            try:
+                m_bin = None
+                if isinstance(msg, dict):
+                    m_bin = msg.get('bin') or msg.get('binPath')
+                if m_bin:
+                    cand.append(str(m_bin))
+            except Exception:
+                pass
+            # 環境変数（ネイティブホストのプロセス環境）
+            env = os.environ.get('TSUPASSWD_BIN')
+            if env:
+                cand.append(env)
+            # PATH からの探索
+            which = shutil.which('tsupasswd')
+            if which:
+                cand.append(which)
+            # よくある場所
+            common = [
+                '/usr/local/bin/tsupasswd',
+                '/usr/bin/tsupasswd',
+                '/opt/homebrew/bin/tsupasswd',
+                'C:\\Users\\f-tsu\\AppData\\Local\\tsupasswd\\tsupasswd.exe',
+            ]
+            cand.extend(common)
+            for p in cand:
+                try:
+                    if p and os.path.isfile(p) and os.access(p, os.X_OK):
+                        return p
+                except Exception:
+                    pass
+            # 最後の手段として環境変数のみ返す
+            return None
+
+        # 実行時環境を組み立て（AUTH_SECRETなどを渡す）。メッセージのsecretが優先
+        def build_run_env(secret=None):
+            env = os.environ.copy()
+            auth_secret = secret if (secret is not None and secret != '') else os.environ.get('AUTH_SECRET')
+            if auth_secret is not None:
+                env['AUTH_SECRET'] = auth_secret
+            return env
+
+        action = msg.get('action')
+        if action == 'SAVE':
+            # 保存リクエスト: { action: 'SAVE', entry: { title, url, username, password, note, credential?, meta? } }
+            entry = msg.get('entry') or {}
+            secret = msg.get('secret') or ''
+            title = str(entry.get('title') or '')
+            url = str(entry.get('url') or '')
+            username = str(entry.get('username') or '')
+            password = str(entry.get('password') or '')
+            note = str(entry.get('note') or '')
+            cred = entry.get('credential') or None
+            meta = entry.get('meta') or {}
+            rp_id = str(meta.get('rpId') or meta.get('rp_id') or '')
+            origin = str(meta.get('origin') or '')
+            bin_path = find_bin()
+            if not bin_path:
+                write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+                last_err = None
+                continue
+            # 1) パスキー保存: credential 情報がある場合は positional 形式で passkey add を実行
+            if cred:
+                try:
+                    # base64url decode
+                    def b64url_to_bytes(s):
+                        try:
+                            s = s.replace('-', '+').replace('_', '/')
+                            pad = '=' * ((4 - len(s) % 4) % 4)
+                            return base64.b64decode(s + pad)
+                        except Exception:
+                            return b''
+                    # 簡易 CBOR パーサ（必要部分のみ）
+                    def _read_uint(b, i, ai):
+                        if ai < 24:
+                            return ai, i
+                        if ai == 24:
+                            return b[i], i+1
+                        if ai == 25:
+                            return int.from_bytes(b[i:i+2], 'big'), i+2
+                        if ai == 26:
+                            return int.from_bytes(b[i:i+4], 'big'), i+4
+                        if ai == 27:
+                            return int.from_bytes(b[i:i+8], 'big'), i+8
+                        raise ValueError('cbor invalid ai')
+                    def cbor_skip(b, i):
+                        mt = b[i] >> 5; ai = b[i] & 31; i += 1
+                        if mt in (0, 1):
+                            # uint / nint
+                            _, i = _read_uint(b, i, ai)
+                            return i
+                        if mt in (2, 3):
+                            ln, i = _read_uint(b, i, ai)
+                            return i + ln
+                        if mt == 4:
+                            ln, i = _read_uint(b, i, ai)
+                            for _ in range(ln):
+                                i = cbor_skip(b, i)
+                            return i
+                        if mt == 5:
+                            ln, i = _read_uint(b, i, ai)
+                            for _ in range(ln):
+                                i = cbor_skip(b, i)  # key
+                                i = cbor_skip(b, i)  # value
+                            return i
+                        if mt == 6:
+                            # tag, then one item
+                            i = cbor_skip(b, i)
+                            return i
+                        if mt == 7:
+                            # floats/simple
+                            if ai < 20:
+                                return i
+                            if ai == 24:
+                                return i+1
+                            if ai == 25:
+                                return i+2
+                            if ai == 26:
+                                return i+4
+                            if ai == 27:
+                                return i+8
+                            return i
+                        raise ValueError('cbor unsupported')
+                    def cbor_read(b, i=0):
+                        mt = b[i] >> 5; ai = b[i] & 31; i += 1
+                        if mt == 0:
+                            val, i = _read_uint(b, i, ai); return val, i
+                        if mt == 1:
+                            val, i = _read_uint(b, i, ai); return -1 - val, i
+                        if mt == 2:
+                            ln, i = _read_uint(b, i, ai); val = b[i:i+ln]; return val, i+ln
+                        if mt == 3:
+                            ln, i = _read_uint(b, i, ai); val = b[i:i+ln].decode('utf-8'); return val, i+ln
+                        if mt == 4:
+                            ln, i = _read_uint(b, i, ai); arr = []
+                            for _ in range(ln):
+                                v, i = cbor_read(b, i); arr.append(v)
+                            return arr, i
+                        if mt == 5:
+                            ln, i = _read_uint(b, i, ai); mp = {}
+                            for _ in range(ln):
+                                k, i = cbor_read(b, i)
+                                v, i = cbor_read(b, i)
+                                mp[k] = v
+                            return mp, i
+                        if mt == 6:
+                            # ignore tag
+                            v, i = cbor_read(b, i)
+                            return v, i
+                        if mt == 7:
+                            # simple/float: treat as None or bool
+                            if ai == 20: return False, i
+                            if ai == 21: return True, i
+                            if ai == 22: return None, i
+                            if ai == 23: return None, i
+                            if ai in (24,25,26,27):
+                                # skip and return None
+                                if ai == 24: i += 1
+                                if ai == 25: i += 2
+                                if ai == 26: i += 4
+                                if ai == 27: i += 8
+                                return None, i
+                            return None, i
+                        raise ValueError('cbor unsupported')
+
+                    import base64
+                    # 1) attestationObject -> CBOR map -> authData (bytes)
+                    resp = cred.get('response') if isinstance(cred, dict) else {}
+                    att_b64 = (resp or {}).get('attestationObject') or ''
+                    if not att_b64:
+                        raise ValueError('missing attestationObject')
+                    att = b64url_to_bytes(att_b64)
+                    att_map, _ = cbor_read(att, 0)
+                    auth = att_map.get('authData') if isinstance(att_map, dict) else None
+                    if not isinstance(auth, (bytes, bytearray)):
+                        raise ValueError('missing authData')
+                    auth = bytes(auth)
+                    # 2) parse authData to extract signCount, credentialId, credentialPublicKey (CBOR bytes)
+                    if len(auth) < 37:
+                        raise ValueError('authData too short')
+                    rpIdHash = auth[0:32]
+                    flags = auth[32]
+                    sign_count = int.from_bytes(auth[33:37], 'big')
+                    AT = (flags & 0x40) != 0
+                    i = 37
+                    cred_id_b64 = ''
+                    pubkey_b64 = ''
+                    if AT:
+                        if len(auth) < i + 16 + 2:
+                            raise ValueError('attestedCredentialData too short')
+                        aaguid = auth[i:i+16]; i += 16
+                        cred_len = int.from_bytes(auth[i:i+2], 'big'); i += 2
+                        if len(auth) < i + cred_len:
+                            raise ValueError('credentialId too short')
+                        cred_id = auth[i:i+cred_len]; i += cred_len
+                        cred_id_b64 = base64.urlsafe_b64encode(cred_id).rstrip(b'=').decode('ascii')
+                        # Remaining is CBOR-encoded credentialPublicKey; determine its byte length via skip
+                        start = i
+                        end = cbor_skip(auth, i)
+                        pubkey_cbor = auth[start:end]
+                        pubkey_b64 = base64.urlsafe_b64encode(pubkey_cbor).rstrip(b'=').decode('ascii')
+                        i = end
+                    # 3) assemble args per spec
+                    rp_for_cmd = rp_id or ''
+                    cid_for_cmd = (cred.get('rawId') if isinstance(cred, dict) else '') or cred_id_b64
+                    uh_for_cmd = str((meta.get('userHandle') if isinstance(meta, dict) else '') or '')
+                    pk_for_cmd = pubkey_b64
+                    if not (rp_for_cmd and cid_for_cmd and uh_for_cmd and pk_for_cmd):
+                        raise ValueError('missing required positional args')
+                    args = [bin_path, 'passkey', 'add', rp_for_cmd, cid_for_cmd, uh_for_cmd, pk_for_cmd]
+                    # optional flags
+                    try:
+                        transports = cred.get('transports') if isinstance(cred, dict) else None
+                        if isinstance(transports, list) and transports:
+                            args.extend(['--transports', ','.join([str(x) for x in transports])])
+                    except Exception:
+                        pass
+                    try:
+                        if title:
+                            args.extend(['--title', title])
+                    except Exception:
+                        pass
+                    try:
+                        args.extend(['--sign-count', str(sign_count)])
+                    except Exception:
+                        pass
+                    cp_pk = subprocess.run(args, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                    if cp_pk.returncode == 0:
+                        write_msg({"ok": True, "stdout": (cp_pk.stdout or '').strip(), "cmd": args})
+                        continue
+                    else:
+                        write_msg({
+                            "ok": False,
+                            "error": (((cp_pk.stderr or '').strip()) or ((cp_pk.stdout or '').strip()) or "tsupasswd passkey add failed"),
+                            "stdout": (cp_pk.stdout or '').strip(),
+                            "stderr": (cp_pk.stderr or '').strip(),
+                            "cmd": args
+                        })
+                        continue
+                except subprocess.TimeoutExpired:
+                    write_msg({"ok": False, "error": "tsupasswd passkey add timeout", "cmd": args})
+                    continue
+                except Exception as e:
+                    write_msg({"ok": False, "error": str(e)})
+                    continue
+            else:
+                write_msg({"ok": False, "error": "missing credential for passkey save"})
+                continue
+
+        elif action == 'DELETE':
+            # 削除リクエスト: { action: 'DELETE', entry: { id } }
+            entry = msg.get('entry') or {}
+            secret = msg.get('secret') or ''
+            rid = str(entry.get('id') or '')
+            bin_path = find_bin()
+            if not bin_path:
+                write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+                continue
+            # 必須: id
+            if not rid:
+                write_msg({"ok": False, "error": "missing required fields (id)", "cmd": ["delete", rid or '']})
+                continue
+            # まず passkey delete を優先
+            cmd_pk = [bin_path, 'passkey', 'delete', rid]
+            try:
+                cp_pk = subprocess.run(cmd_pk, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                if cp_pk.returncode == 0:
+                    write_msg({"ok": True, "stdout": (cp_pk.stdout or '').strip(), "cmd": cmd_pk})
+                else:
+                    # フォールバック: 通常の delete
+                    try:
+                        cmd = [bin_path, 'delete', rid]
+                        cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                        if cp.returncode == 0:
+                            write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                        else:
+                            write_msg({"ok": False, "error": (((cp_pk.stderr or '').strip()) or ((cp_pk.stdout or '').strip()) or ((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd delete failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+                    except subprocess.TimeoutExpired:
+                        write_msg({"ok": False, "error": "tsupasswd delete timeout", "cmd": ['delete', rid]})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd passkey delete timeout", "cmd": cmd_pk})
+            continue
+            # 位置引数: URL ユーザID パスワード（空なら空文字）/ オプション: --title タイトル, --note 備考
+            def build_args():
+                if not url:
+                    return None
+                usr = username if username is not None else ''
+                pwd = password if password is not None else ''
+                args = [bin_path, 'add', url, usr, pwd]
+                if title:
+                    args.extend(['--title', title])
+                if note:
+                    args.extend(['--note', note])
+                return args
+            cmd = build_args()
+            if not cmd:
+                write_msg({"ok": False, "error": "missing required fields (url)", "cmd": ["add", url or '', (username or ''), "***"]})
+            else:
+                try:
+                    cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                    if cp.returncode == 0:
+                        write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                    else:
+                        write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd save failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+                except subprocess.TimeoutExpired as te:
+                    write_msg({"ok": False, "error": "tsupasswd save timeout", "cmd": cmd})
+            last_err = None
+            # 既存のループは不要になったため削除
+            continue
+
+        elif action == 'AUTH':
+            # 認証: { action: 'AUTH', mode?: 'secret' }
+            # 例: tsupasswd auth secret （AUTH_SECRETはenvで渡す）
+            mode = str(msg.get('mode') or 'secret')
+            secret = msg.get('secret') or ''
+            bin_path = find_bin()
+            if not bin_path:
+                write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+                continue
+            cmd = [bin_path, 'auth', mode]
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                if cp.returncode == 0:
+                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd auth failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd auth timeout", "cmd": cmd})
+            continue
+
+        # 既存: 検索（資格情報取得）/ 認証（auth）/ 保存（add）
+        args = msg.get('args') or []
+        secret = msg.get('secret') or ''
+        bin_path = find_bin()
+        if not bin_path:
+            write_msg({"ok": False, "error": "tsupasswd binary not found or not executable. Set TSUPASSWD_BIN or install 'tsupasswd' in PATH."})
+            continue
+        a0 = str(args[0]) if args else ''
+        if a0 == 'add':
+            # 保存
+            cmd = [bin_path] + args
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=8)
+                if cp.returncode != 0:
+                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd add timeout", "cmd": cmd})
+        elif a0 == 'passkey':
+            # パスキー操作: tsupasswd passkey add/search ...
+            cmd = [bin_path] + args
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                out = (cp.stdout or '').strip()
+                if cp.returncode == 0:
+                    # search --json の場合はタイトルを補完して返す
+                    try:
+                        is_search = (len(args) >= 2 and str(args[1]).lower() == 'search') and ('--json' in args)
+                    except Exception:
+                        is_search = False
+                    if is_search:
+                        try:
+                            data = json.loads(out or '[]')
+                            if isinstance(data, dict) and 'entries' in data and isinstance(data['entries'], list):
+                                arr = data['entries']
+                                for e in arr:
+                                    try:
+                                        title = e.get('title') or e.get('name') or ''
+                                        if not title:
+                                            rp = e.get('rp_id') or e.get('rpId') or e.get('rp') or ''
+                                            e['title'] = str(rp)
+                                    except Exception:
+                                        pass
+                                try:
+                                    arr.sort(key=lambda x: (str((x.get('title') or '').strip()).lower()))
+                                except Exception:
+                                    pass
+                                new_out = json.dumps(arr, ensure_ascii=False)
+                            else:
+                                arr = data if isinstance(data, list) else [data]
+                                for e in arr:
+                                    if isinstance(e, dict):
+                                        try:
+                                            title = e.get('title') or e.get('name') or ''
+                                            if not title:
+                                                rp = e.get('rp_id') or e.get('rpId') or e.get('rp') or ''
+                                                e['title'] = str(rp)
+                                        except Exception:
+                                            pass
+                                try:
+                                    arr.sort(key=lambda x: (str((x.get('title') or '').strip()).lower()) if isinstance(x, dict) else '')
+                                except Exception:
+                                    pass
+                                new_out = json.dumps(arr, ensure_ascii=False)
+                            write_msg({"ok": True, "stdout": new_out, "cmd": cmd})
+                        except Exception:
+                            write_msg({"ok": True, "stdout": out, "cmd": cmd})
+                    else:
+                        write_msg({"ok": True, "stdout": out, "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd passkey failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd passkey timeout", "cmd": cmd})
+        elif a0 == 'auth':
+            # 認証: tsupasswd auth <secret or mode>
+            cmd = [bin_path, 'auth'] + list(args[1:])
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=20)
+                if cp.returncode == 0:
+                    write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                else:
+                    write_msg({"ok": False, "error": (((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or "tsupasswd auth failed"), "stdout": (cp.stdout or '').strip(), "stderr": (cp.stderr or '').strip(), "cmd": cmd})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd auth timeout", "cmd": cmd})
+        elif a0 == 'update':
+            # 更新: tsupasswd update <id> [--url U] [--user NAME] [--password PASS | --length N] [--title T] [--note N]
+            # 一部実装では 'update' が存在しない可能性があるため 'set' や 'edit' にフォールバック
+            attempts = []
+            subcmds = ['update', 'set', 'edit']
+            last_err = None
+            for sub in subcmds:
+                try:
+                    cmd = [bin_path, sub] + list(args[1:])
+                    cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=12)
+                    if cp.returncode == 0:
+                        write_msg({"ok": True, "stdout": (cp.stdout or '').strip(), "cmd": cmd})
+                        last_err = None
+                        break
+                    else:
+                        attempts.append({"subcmd": sub, "stderr": (cp.stderr or '').strip(), "stdout": (cp.stdout or '').strip(), "code": cp.returncode})
+                        last_err = ((cp.stderr or '').strip()) or ((cp.stdout or '').strip()) or f"tsupasswd {sub} failed"
+                except subprocess.TimeoutExpired:
+                    attempts.append({"subcmd": sub, "stderr": "timeout"})
+                    last_err = f"tsupasswd {sub} timeout"
+            if last_err is not None:
+                write_msg({"ok": False, "error": last_err, "attempts": attempts})
+        else:
+            # 検索
+            cmd = [bin_path, "search"] + (args or []) + ["--json"]
+            try:
+                cp = subprocess.run(cmd, capture_output=True, text=True, env=build_run_env(secret), timeout=8)
+                if cp.returncode != 0:
+                    write_msg({"ok": False, "error": ((cp.stderr or '').strip() or "tsupasswd failed")})
+                else:
+                    out = (cp.stdout or '').strip()
+                    # 可能なら JSON として読み取り、複数件も整形
+                    try:
+                        data = json.loads(out)
+                        user_keys = {"username", "user", "login", "account", "email"}
+                        pass_keys = {"password", "pass", "secret"}
+                        title_keys = {"title", "name", "label"}
+                        url_keys = {"url", "uri", "link"}
+                        note_keys = {"note", "memo", "remark", "comment"}
+                        id_keys = {"id", "entry_id", "credential_id"}
+
+                        entries = []
+                        # 結果がリスト、もしくはオブジェクト内の配列フィールドを探索
+                        cand_list = None
+                        if isinstance(data, list):
+                            cand_list = data
+                        elif isinstance(data, dict):
+                            # 最上位の配列フィールドを一つ拾う（簡易）
+                            for v in data.values():
+                                if isinstance(v, list):
+                                    cand_list = v
+                                    break
+                        if cand_list is None:
+                            cand_list = [data]
+
+                        for item in cand_list:
+                            try:
+                                e = {
+                                    "id": _find_in_obj(item, id_keys) or "",
+                                    "title": _find_in_obj(item, title_keys) or "",
+                                    "url": _find_in_obj(item, url_keys) or "",
+                                    "username": _find_in_obj(item, user_keys) or "",
+                                    "password": _find_in_obj(item, pass_keys) or "",
+                                    "note": _find_in_obj(item, note_keys) or "",
+                                }
+                                if any([e["username"], e["password"], e["title"], e["url"], e["note"]]):
+                                    entries.append(e)
+                            except Exception:
+                                pass
+
+                        # 後方互換のため、先頭要素のusername/passwordも併記
+                        first_user = entries[0]["username"] if entries else (_find_in_obj(data, user_keys) or "")
+                        first_pass = entries[0]["password"] if entries else (_find_in_obj(data, pass_keys) or "")
+                        write_msg({"ok": True, "entries": entries, "username": first_user, "password": first_pass})
+                    except Exception:
+                        # 非JSON出力の場合のフォールバック（簡易抽出）
+                        import re
+                        m_user = re.search(r"user(?:name)?[:=]\s*(\S+)", out, re.IGNORECASE)
+                        m_pass = re.search(r"pass(?:word)?[:=]\s*(\S+)", out, re.IGNORECASE)
+                        username = m_user.group(1) if m_user else ""
+                        password = m_pass.group(1) if m_pass else ""
+                        write_msg({"ok": True, "entries": [{"title": "", "url": "", "username": username, "password": password, "note": ""}], "username": username, "password": password})
+            except subprocess.TimeoutExpired:
+                write_msg({"ok": False, "error": "tsupasswd search timeout", "cmd": cmd})
+                # 可能なら JSON として読み取り、複数件も整形
+                try:
+                    data = json.loads(out)
+                    user_keys = {"username", "user", "login", "account", "email"}
+                    pass_keys = {"password", "pass", "secret"}
+                    title_keys = {"title", "name", "label"}
+                    url_keys = {"url", "uri", "link"}
+                    note_keys = {"note", "memo", "remark", "comment"}
+
+                    entries = []
+                    # 結果がリスト、もしくはオブジェクト内の配列フィールドを探索
+                    cand_list = None
+                    if isinstance(data, list):
+                        cand_list = data
+                    elif isinstance(data, dict):
+                        # 最上位の配列フィールドを一つ拾う（簡易）
+                        for v in data.values():
+                            if isinstance(v, list):
+                                cand_list = v
+                                break
+                    if cand_list is None:
+                        cand_list = [data]
+
+                    for item in cand_list:
+                        try:
+                            e = {
+                                "title": _find_in_obj(item, title_keys) or "",
+                                "url": _find_in_obj(item, url_keys) or "",
+                                "username": _find_in_obj(item, user_keys) or "",
+                                "password": _find_in_obj(item, pass_keys) or "",
+                                "note": _find_in_obj(item, note_keys) or "",
+                            }
+                            if any([e["username"], e["password"], e["title"], e["url"], e["note"]]):
+                                entries.append(e)
+                        except Exception:
+                            pass
+
+                    # 後方互換のため、先頭要素のusername/passwordも併記
+                    first_user = entries[0]["username"] if entries else (_find_in_obj(data, user_keys) or "")
+                    first_pass = entries[0]["password"] if entries else (_find_in_obj(data, pass_keys) or "")
+                    write_msg({"ok": True, "entries": entries, "username": first_user, "password": first_pass})
+                except Exception:
+                    # 非JSON出力の場合のフォールバック（簡易抽出）
+                    # 例: "user: alice\npass: secret" や "username=alice password=secret"
+                    import re
+                    m_user = re.search(r"user(?:name)?[:=]\s*(\S+)", out, re.IGNORECASE)
+                    m_pass = re.search(r"pass(?:word)?[:=]\s*(\S+)", out, re.IGNORECASE)
+                    username = m_user.group(1) if m_user else ""
+                    password = m_pass.group(1) if m_pass else ""
+                    write_msg({"ok": True, "entries": [{"title": "", "url": "", "username": username, "password": password, "note": ""}], "username": username, "password": password})
+    except Exception as e:
+        write_msg({"ok": False, "error": str(e)})

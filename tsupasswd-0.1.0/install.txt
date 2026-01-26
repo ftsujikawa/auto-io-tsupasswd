@@ -1,0 +1,98 @@
+tsupasswd インストール手順
+============================
+
+このファイルは、一般ユーザ向けのインストール手順です。
+対象: Google Chrome + tsupasswd Chrome 拡張 + 付属アプリ（ネイティブメッセージング）
+配布形態: tsupasswd-<version>.zip
+
+----------------------------------------
+1. 共通: Chrome 拡張のインストール
+----------------------------------------
+
+1. zip ファイルを任意のフォルダに解凍します。
+2. Google Chrome を起動し、アドレスバーに次を入力して開きます。
+
+   chrome://extensions/
+
+3. 右上の「デベロッパーモード」を ON にします。
+4. 解凍したフォルダ内の `extension` フォルダを開きます。
+5. 次のいずれかの方法で拡張をインストールします。
+   - `extension` フォルダ内に `.crx` ファイルがある場合:
+     - その `.crx` ファイルを `chrome://extensions/` のタブにドラッグ＆ドロップします。
+   - `.crx` がなく、フォルダ構成のみの場合:
+     - `chrome://extensions/` 画面で「パッケージ化されていない拡張機能を読み込む」をクリックし、
+       `extension` フォルダを選択します。
+6. 「拡張機能を追加」をクリックしてインストールを完了します。
+7. `chrome://extensions/` 画面で、`tsupasswd` 拡張の「詳細」を開き、
+   表示されている「拡張機能 ID」（32 文字の英数字）をメモしておきます。
+
+----------------------------------------
+2. Linux での付属アプリのインストール
+----------------------------------------
+
+1. ターミナルを開き、解凍したフォルダの `linux` ディレクトリへ移動します。
+
+   例:
+
+   cd tsupasswd-<version>/linux
+
+2. 手順 1 でメモした拡張機能 ID を使って、次のコマンドを実行します。
+
+   sudo ./install.sh <拡張ID>
+
+   例:
+
+   sudo ./install.sh lcldphkjlgbamclijokfnkfemmkaehjl
+
+3. スクリプトが以下を自動的に行います。
+   - `/usr/local/bin` に `tsupasswd-host` と `tsupasswd` をインストールします。
+   - あなたのユーザ用 Chrome 設定フォルダに
+     `NativeMessagingHosts/dev.happyfactory.tsupasswd.json` を作成します。
+   - 上記 JSON に、実際のバイナリパスと拡張機能 ID を設定します。
+
+4. Google Chrome をいったん全て終了してから再起動します。
+5. `tsupasswd` 拡張のボタン等を操作し、パスワード連携などが動作することを確認します。
+
+----------------------------------------
+3. Windows での付属アプリのインストール
+----------------------------------------
+
+1. エクスプローラで、解凍したフォルダの `windows` ディレクトリを開きます。
+2. `install-windows.ps1` を右クリックし、「PowerShell で実行」(または類似の項目) を選択します。
+   - 初回実行時にスクリプト実行ポリシーに関する警告が出た場合は、
+     管理者またはシステム管理者の指示に従ってください。
+3. PowerShell ウィンドウに「Enter Chrome extension ID」などのメッセージが表示されたら、
+   手順 1 でメモした拡張機能 ID（32 文字）を貼り付けて Enter キーを押します。
+4. スクリプトが以下を自動的に行います。
+   - `%LOCALAPPDATA%\tsupasswd` フォルダを作成し、
+     そこに `tsupasswd-host.cmd` と `tsupasswd.exe` をコピーします。
+   - `%LOCALAPPDATA%\Google\Chrome\User Data\NativeMessagingHosts\dev.happyfactory.tsupasswd.json` を作成し、
+     その中の `path` と `allowed_origins` を実際のパスと拡張機能 ID に合わせて設定します。
+   - レジストリ キー
+     `HKCU\Software\Google\Chrome\NativeMessagingHosts\dev.happyfactory.tsupasswd`
+     に、上記 JSON ファイルへのパスを登録します。
+
+5. Google Chrome をいったん全て終了してから再起動します。
+6. `tsupasswd` 拡張のボタン等を操作し、パスワード連携などが動作することを確認します。
+
+----------------------------------------
+4. トラブルシューティング (代表的なエラー)
+----------------------------------------
+
+- メッセージ: Access to the specified native messaging host is forbidden.
+  - 原因: ネイティブメッセージング ホストの JSON に設定されている拡張 ID が、
+    実際の拡張機能 ID と一致していません。
+  - 対処: インストールスクリプトを再実行し、正しい拡張 ID を指定してください。
+
+- メッセージ: Specified native messaging host not found.
+  - 原因: ネイティブメッセージング ホストの JSON が Chrome の規定の場所にありません。
+    または JSON の `name` が拡張から指定しているホスト名と一致していません。
+  - 対処: インストールスクリプトを再実行してください。問題が解決しない場合は、
+    開発者に連絡してください。
+
+- メッセージ: tsupasswd binary not found or not executable.
+  - 原因: `tsupasswd` 実行ファイルがインストールされていない、または実行権限がありません。
+  - 対処: インストールスクリプトを再実行するか、`tsupasswd` バイナリの存在と権限を
+    開発者に確認してください。
+
+以上でインストールは完了です。
