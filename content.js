@@ -45,7 +45,7 @@
     } catch(_) { return null; }
   };
 
-  // --- パスキー環境での従来ポップアップ徹底無効化（最終ガード） ---
+  /* --- パスキー環境での従来ポップアップ徹底無効化（最終ガード） ---
   try {
     (function(){
       // presentAuthPopup をラップし、パスキー環境では常に候補一覧のみ表示して return
@@ -55,7 +55,6 @@
           const wrapped = function(anchor){
             try {
               if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
-                try { showPasskeyCandidatePopup(anchor); } catch(_) {}
                 return null;
               }
             } catch(_) {}
@@ -111,6 +110,7 @@
       } catch(_) {}
     })();
   } catch(_) {}
+*/
 
   // 直近ユーザ操作の有無
   function hasRecentUserGesture(maxMs) {
@@ -2445,12 +2445,12 @@
     try {
       try { console.info('[tsu] showPasskeyPopup called', { anchorExists: !!anchor }); } catch(_) {}
       const detail = extractPasskeyFromPage(document);
-      try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { showPasskeyCandidatePopup(anchor); return; } } catch(_) {}
+      try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { return; } } catch(_) {}
       openPasskeyDialog(anchor, detail);
     } catch(_) {}
   }
 
-  // パスキー候補一覧（rpIdで検索し、タイトルを表示）
+  /* // パスキー候補一覧（rpIdで検索し、タイトルを表示）
   function showPasskeyCandidatePopup(anchor) {
     try {
       // 従来のインラインポップアップを強制的に閉じて干渉を避ける
@@ -2880,7 +2880,7 @@
       runSearch();
       return box;
     } catch(_) { return null; }
-  }
+  } */
 
   // パスキー利用可否（キーワード判定）
   function isPasskeyCapable() {
@@ -2934,10 +2934,6 @@
 
   let presentAuthPopup = function(anchor) {
     try {
-      // パスキー環境では従来ポップアップを出さず、候補一覧のみ表示
-      try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(anchor); } catch(_) {} return null; } } catch(_) {}
-      // パスキーが使用できる場合は、登録ボタンのみフック（自動表示はしない）
-      try { isPasskeyCapable().then((ok) => { try { if (ok) { bindPasskeyRegisterButtons(); /* no auto show */ } } catch(_) {} }); } catch(_) {}
       // パスワード欄は常に許可。ユーザ名欄は、(a) 明確にメール/ユーザID欄なら常に許可 (b) それ以外は同一フォームに可視パス有 or 許可文脈
       const userLike = !!(anchor && (isUserLike(anchor) || (isUsernameOnlyAllowedContext() && isTextboxLike(anchor))));
       const passLike = !!(anchor && isPassLike(anchor));
@@ -3284,8 +3280,6 @@
               if (f && f.__tsuBound) return;
               if (f) f.__tsuBound = true;
             } catch(_) { return; }
-            // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
-            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(user)); } catch(_) {} return; } } catch(_) {}
             const b = presentAuthPopup(pickPreferredAnchor(user)); attachBoxClick(b);
           };
           user.addEventListener('pointerdown', showOnClick, true);
@@ -3296,8 +3290,6 @@
         if (!pass.__tsuBound) {
           const showOnClickP = function(){
             if (dialogOpen) return;
-            // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
-            try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(pass)); } catch(_) {} return; } } catch(_) {}
             // パスキー有効時はクリックでも表示しない
             try {
               if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
@@ -3328,8 +3320,6 @@
             if (uEl.__tsuBound) continue;
             const showOnClickU = function(){
               if (dialogOpen) return;
-              // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
-              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(uEl)); } catch(_) {} return; } } catch(_) {}
               // パスキー有効時はクリックでも表示しない
               try {
                 if (isPasskeyActiveNow()) {
@@ -3352,8 +3342,6 @@
             if (pEl.__tsuBound) continue;
             const showOnClickOnlyP = function(){
               if (dialogOpen) return;
-              // パスキー環境では従来ポップアップを出さず候補一覧に切り替え
-              try { if (isPasskeyEnvOn() || isPasskeyActiveNow()) { try { showPasskeyCandidatePopup(pickPreferredAnchor(pEl)); } catch(_) {} return; } } catch(_) {}
               // パスキー有効時はクリックでも表示しない
               try {
                 if (typeof window.PublicKeyCredential === 'function' || isPasskeyActiveNow()) {
@@ -3434,7 +3422,6 @@
             try {
               if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
                 try { window.__tsu_current_anchor = pref; } catch(_) {}
-                try { showPasskeyCandidatePopup(pref); } catch(_) {}
                 return;
               }
             } catch(_) {}
@@ -3489,7 +3476,6 @@
             try {
               if (isPasskeyEnvOn() || isPasskeyActiveNow()) {
                 try { window.__tsu_current_anchor = pref; } catch(_) {}
-                try { showPasskeyCandidatePopup(pref); } catch(_) {}
                 return;
               }
             } catch(_) {}
