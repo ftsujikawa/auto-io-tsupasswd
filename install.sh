@@ -22,13 +22,48 @@ EXT_ID="$1"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="/usr/local/bin"
 
+OS_NAME="$(uname -s)"
+
+get_user_home() {
+  local user="$1"
+
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "${user}" | cut -d: -f6
+    return 0
+  fi
+
+  if [ "${OS_NAME}" = "Darwin" ]; then
+    dscl . -read "/Users/${user}" NFSHomeDirectory 2>/dev/null | awk '{print $2}'
+    return 0
+  fi
+
+  eval echo "~${user}"
+}
+
+make_tmpfile() {
+  if [ "${OS_NAME}" = "Darwin" ]; then
+    mktemp -t tsupasswd
+  else
+    mktemp
+  fi
+}
+
 # When run via sudo, HOME will be /root, but the NativeMessaging host must be
 # installed for the invoking user (SUDO_USER). Detect that and target their
 # home directory instead.
 TARGET_USER="${SUDO_USER:-${USER}}"
-TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
+TARGET_HOME="$(get_user_home "${TARGET_USER}")"
 
-CHROME_NATIVE_DIR="${TARGET_HOME}/.config/google-chrome/NativeMessagingHosts"
+if [ -z "${TARGET_HOME}" ]; then
+  echo "[ERROR] Failed to detect home directory for user: ${TARGET_USER}" >&2
+  exit 1
+fi
+
+if [ "${OS_NAME}" = "Darwin" ]; then
+  CHROME_NATIVE_DIR="${TARGET_HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+else
+  CHROME_NATIVE_DIR="${TARGET_HOME}/.config/google-chrome/NativeMessagingHosts"
+fi
 
 HOST_BINARY_SRC="${REPO_DIR}/tsupasswd-host"
 CLI_BINARY_SRC="${REPO_DIR}/tsupasswd"
@@ -67,7 +102,7 @@ mkdir -p "${CHROME_NATIVE_DIR}"
 
 # Replace extension ID in manifest and write to destination
 # Assumes manifest contains a single allowed_origins entry we can safely replace.
-TMP_MANIFEST="$(mktemp)"
+TMP_MANIFEST="$(make_tmpfile)"
 sed "s#chrome-extension://.\{32\}/#chrome-extension://${EXT_ID}/#" "${HOST_MANIFEST_SRC}" > "${TMP_MANIFEST}"
 
 cp "${TMP_MANIFEST}" "${HOST_MANIFEST_DST}"

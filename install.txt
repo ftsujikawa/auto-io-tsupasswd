@@ -54,7 +54,31 @@ tsupasswd インストール手順
 5. `tsupasswd` 拡張のボタン等を操作し、パスワード連携などが動作することを確認します。
 
 ----------------------------------------
-3. Windows での付属アプリのインストール
+3. macOS での付属アプリのインストール
+----------------------------------------
+
+1. ターミナルを開き、解凍したフォルダ（またはリポジトリ）のルートへ移動します。
+
+2. 手順 1 でメモした拡張機能 ID を使って、次のコマンドを実行します。
+
+   sudo ./install.sh <拡張ID>
+
+   例:
+
+   sudo ./install.sh lcldphkjlgbamclijokfnkfemmkaehjl
+
+3. スクリプトが以下を自動的に行います。
+   - `/usr/local/bin` に `tsupasswd-host` と `tsupasswd` をインストールします。
+   - あなたのユーザ用 Chrome 設定フォルダに
+     `NativeMessagingHosts/dev.happyfactory.tsupasswd.json` を作成します。
+     (macOS の作成先: `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`)
+   - 上記 JSON に、実際のバイナリパスと拡張機能 ID を設定します。
+
+4. Google Chrome をいったん全て終了してから再起動します。
+5. `tsupasswd` 拡張のボタン等を操作し、パスワード連携などが動作することを確認します。
+
+----------------------------------------
+4. Windows での付属アプリのインストール
 ----------------------------------------
 
 1. エクスプローラで、解凍したフォルダの `windows` ディレクトリを開きます。
@@ -76,7 +100,7 @@ tsupasswd インストール手順
 6. `tsupasswd` 拡張のボタン等を操作し、パスワード連携などが動作することを確認します。
 
 ----------------------------------------
-4. トラブルシューティング (代表的なエラー)
+5. トラブルシューティング (代表的なエラー)
 ----------------------------------------
 
 - メッセージ: Access to the specified native messaging host is forbidden.
