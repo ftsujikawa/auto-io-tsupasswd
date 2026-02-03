@@ -20,6 +20,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # Install location in user's profile (no admin required)
 $InstallDir = Join-Path $env:LOCALAPPDATA "tsupasswd"
 $HostBinarySrc = Join-Path $ScriptDir "tsupasswd-host.cmd"
+$HostScriptSrc = Join-Path $ScriptDir "tsupasswd-host"
 $CliBinarySrc  = Join-Path $ScriptDir "tsupasswd.exe"
 $ManifestTemplateSrc = Join-Path $ScriptDir "dev.happyfactory.tsupasswd-win.json"
 
@@ -29,6 +30,10 @@ if (-not (Test-Path $HostBinarySrc)) {
 }
 if (-not (Test-Path $CliBinarySrc)) {
     Write-Error "CLI binary not found: $CliBinarySrc"
+    exit 1
+}
+if (-not (Test-Path $HostScriptSrc)) {
+    Write-Error "Host script not found: $HostScriptSrc"
     exit 1
 }
 if (-not (Test-Path $ManifestTemplateSrc)) {
@@ -41,6 +46,7 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
 Copy-Item $HostBinarySrc (Join-Path $InstallDir "tsupasswd-host.cmd") -Force
 Copy-Item $CliBinarySrc  (Join-Path $InstallDir "tsupasswd.exe")      -Force
+Copy-Item $HostScriptSrc (Join-Path $InstallDir "tsupasswd-host")     -Force
 
 Write-Host "Installed binaries to $InstallDir" -ForegroundColor Green
 
@@ -57,8 +63,8 @@ $manifestJson = Get-Content $ManifestTemplateSrc -Raw
 # Escape backslashes for JSON
 $escapedPath = $HostBinaryPath.Replace("\", "\\")
 
-$manifestJson = $manifestJson -replace '"path"\s*:\s*"[^"]*"', '"path": ' + '"' + $escapedPath + '"'
-$manifestJson = $manifestJson -replace 'chrome-extension://[a-z0-9]{32}/', 'chrome-extension://' + $ExtensionId + '/' 
+$manifestJson = $manifestJson -replace '"path"\s*:\s*"[^"]*"', ('"path": ' + '"' + $escapedPath + '"')
+$manifestJson = $manifestJson -replace 'chrome-extension://[a-z0-9]{32}/', ('chrome-extension://' + $ExtensionId + '/')
 
 $manifestJson | Out-File -FilePath $ManifestDst -Encoding UTF8
 
