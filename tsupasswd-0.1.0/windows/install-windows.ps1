@@ -50,6 +50,29 @@ Copy-Item $HostScriptSrc (Join-Path $InstallDir "tsupasswd-host")     -Force
 
 Write-Host "Installed binaries to $InstallDir" -ForegroundColor Green
 
+[Environment]::SetEnvironmentVariable('TSUPASSWD_HOME', $InstallDir, 'User')
+$env:TSUPASSWD_HOME = $InstallDir
+
+$currentUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $currentUserPath) {
+    $currentUserPath = ''
+}
+
+$pathParts = @($currentUserPath -split ';' | Where-Object { $_ -and $_.Trim() -ne '' })
+$alreadyInPath = $false
+foreach ($p in $pathParts) {
+    if ($p.TrimEnd('\\') -ieq $InstallDir.TrimEnd('\\')) {
+        $alreadyInPath = $true
+        break
+    }
+}
+
+if (-not $alreadyInPath) {
+    $newUserPath = if ($currentUserPath) { "$currentUserPath;$InstallDir" } else { $InstallDir }
+    [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+    $env:Path = "$env:Path;$InstallDir"
+}
+
 # Prepare Native Messaging host manifest
 $ChromeNativeDir = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data\NativeMessagingHosts"
 New-Item -ItemType Directory -Path $ChromeNativeDir -Force | Out-Null

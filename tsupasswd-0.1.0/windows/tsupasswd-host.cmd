@@ -1,6 +1,7 @@
 @echo off
 setlocal
-set "TSUPASSWD_BIN=C:\Users\f-tsu\AppData\Local\tsupasswd\tsupasswd.exe"
+if not defined TSUPASSWD_HOME set "TSUPASSWD_HOME=%~dp0"
+set "TSUPASSWD_BIN=%TSUPASSWD_HOME%\tsupasswd.exe"
 REM pythonのフルパスが必要なら差し替え
-"C:\Users\f-tsu\AppData\Local\Python\bin\python.exe" "%~dp0tsupasswd-host"
+"python.exe" "%TSUPASSWD_HOME%\tsupasswd-host"
 endlocal
